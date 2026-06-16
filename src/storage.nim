@@ -2,7 +2,7 @@
 ## Notes live in dataDir(); templates live in templatesDir() (a `.templates`
 ## subdirectory, hidden by leading dot).
 
-import std/[os, strutils, algorithm, times, oids, options]
+import std/[os, strutils, algorithm, times, oids, options, base64]
 import config
 
 var gConfig: Config = loadConfig()
@@ -153,3 +153,30 @@ proc saveTemplate*(id, title, content: string) = saveToDir(templatesDir(), id, t
 proc createTemplate*(): NoteMeta = createInDir(templatesDir())
 proc deleteTemplate*(id: string) = deleteInDir(templatesDir(), id)
 proc searchTemplates*(query: string; limit = 200): seq[SearchHit] = searchIn(templatesDir(), query, limit)
+
+# ── Attachments ─────────────────────────────────────────────────────────────
+
+proc attachmentsDir*(): string =
+  result = dataDir() / "attachments"
+  createDir(result)
+
+proc saveAttachment*(dataUrl: string): string =
+  ## Decode a data: URL of an image and persist to attachments/. Returns the
+  ## vault-relative path (e.g. "attachments/abc.png").
+  const prefix = "data:image/"
+  if not dataUrl.startsWith(prefix):
+    raise newException(ValueError, "expected a data:image/… URL")
+  let semicolon = dataUrl.find(';', prefix.len)
+  let comma = dataUrl.find(',', max(semicolon, prefix.len))
+  if semicolon < 0 or comma < 0:
+    raise newException(ValueError, "malformed data URL")
+  var ext = dataUrl[prefix.len ..< semicolon].toLowerAscii()
+  # Sanitize: e.g. "svg+xml" → "svg"
+  let plus = ext.find('+')
+  if plus >= 0: ext = ext[0 ..< plus]
+  if ext.len == 0 or ext.len > 6: ext = "bin"
+  let payload = dataUrl[(comma + 1) .. ^1]
+  let data = base64.decode(payload)
+  let filename = $genOid() & "." & ext
+  writeFile(attachmentsDir() / filename, data)
+  result = "attachments/" & filename

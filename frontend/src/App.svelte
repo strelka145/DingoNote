@@ -5,6 +5,7 @@
     editorExtensions,
     setTemplatesProvider,
     setWikilinkContext,
+    setVaultPathProvider,
   } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
@@ -136,8 +137,14 @@
   let showSettings = $state(false)
   let config = $state<{ vaultPath: string }>({ vaultPath: '' })
 
-  async function openSettings() {
+  setVaultPathProvider(() => config.vaultPath)
+
+  async function loadConfig() {
     config = await api.configGet()
+  }
+
+  async function openSettings() {
+    await loadConfig()
     showSettings = true
   }
 
@@ -286,7 +293,7 @@
     return () => window.removeEventListener('keydown', onGlobalKeyDown)
   })
 
-  refresh()
+  loadConfig().then(() => refresh())
 </script>
 
 <main>

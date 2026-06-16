@@ -17,6 +17,7 @@ interface NoteApi {
   configGet(): Promise<{ vaultPath: string }>
   configSet(config: { vaultPath?: string }): Promise<{ vaultPath: string }>
   pickFolder(startPath?: string): Promise<string>
+  saveAttachment(dataUrl: string): Promise<string>
 }
 
 declare global {
@@ -39,6 +40,7 @@ declare global {
       config: { vaultPath?: string },
     ) => Promise<{ vaultPath: string }>
     pickFolder?: (startPath?: string) => Promise<string>
+    saveAttachment?: (dataUrl: string) => Promise<string>
   }
 }
 
@@ -61,6 +63,7 @@ function nimApi(): NoteApi {
     configGet: () => window.configGet!(),
     configSet: (c) => window.configSet!(c),
     pickFolder: (s) => window.pickFolder!(s ?? ''),
+    saveAttachment: (url) => window.saveAttachment!(url),
   }
 }
 
@@ -187,6 +190,9 @@ function localApi(): NoteApi {
     },
     async pickFolder() {
       return prompt('Vault path:') ?? ''
+    },
+    async saveAttachment(url) {
+      return url
     },
   }
 }
