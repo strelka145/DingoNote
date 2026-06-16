@@ -2,14 +2,29 @@ import std/[json, options, os, strutils]
 import webview
 import storage
 
-{.compile: "../vendor/macos_menu/menu.mm".}
-{.compile: "../vendor/macos_pdf/pdf.mm".}
-{.compile: "../vendor/macos_dialog/dialog.mm".}
-{.compile: "../vendor/macos_loader/loader.mm".}
-proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
-proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
-proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
-proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
+# ── Platform-specific native integration ─────────────────────────────────────
+# macOS uses Objective-C++ helpers for the system menu, NSOpenPanel folder
+# picker, NSPrintInfo-based PDF export, and the WKWebView sandbox-relaxing
+# loader. Other platforms ship stubs so the same Nim source builds.
+
+when defined(macosx):
+  {.compile: "../vendor/macos_menu/menu.mm".}
+  {.compile: "../vendor/macos_pdf/pdf.mm".}
+  {.compile: "../vendor/macos_dialog/dialog.mm".}
+  {.compile: "../vendor/macos_loader/loader.mm".}
+  proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
+  proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
+  proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
+  proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
+
+const platformName: string =
+  when defined(macosx): "macos"
+  elif defined(linux): "linux"
+  elif defined(windows): "windows"
+  else: "unknown"
+
+const hasNativePdfExport = defined(macosx)
+const hasNativeFolderPicker = defined(macosx)
 
 # ── JSON marshalling ──────────────────────────────────────────────────────────
 
@@ -164,12 +179,15 @@ proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let args = parseJson($req).getElems()
-    let defaultName =
-      if args.len > 0 and args[0].kind == JString: args[0].getStr()
-      else: "note.pdf"
-    note_export_pdf(w, defaultName.cstring)
-    reply(w, id, newJNull())
+    when defined(macosx):
+      let args = parseJson($req).getElems()
+      let defaultName =
+        if args.len > 0 and args[0].kind == JString: args[0].getStr()
+        else: "note.pdf"
+      note_export_pdf(w, defaultName.cstring)
+      reply(w, id, newJNull())
+    else:
+      replyError(w, id, "PDF export is not supported on this platform yet")
   except CatchableError as e:
     replyError(w, id, e.msg)
 
@@ -178,7 +196,14 @@ proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbConfigGet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let obj = %* {"vaultPath": getVaultPath()}
+    let obj = %* {
+      "vaultPath": getVaultPath(),
+      "platform": platformName,
+      "features": {
+        "pdfExport": hasNativePdfExport,
+        "nativeFolderPicker": hasNativeFolderPicker,
+      },
+    }
     reply(w, id, obj)
   except CatchableError as e:
     replyError(w, id, e.msg)
@@ -197,13 +222,18 @@ proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let args = parseJson($req).getElems()
-    let start =
-      if args.len > 0 and args[0].kind == JString: args[0].getStr()
-      else: getVaultPath()
-    # Native callback is responsible for calling webview_return — do NOT
-    # reply here, otherwise we'd resolve the promise twice.
-    note_pick_folder(w, id, start.cstring)
+    when defined(macosx):
+      let args = parseJson($req).getElems()
+      let start =
+        if args.len > 0 and args[0].kind == JString: args[0].getStr()
+        else: getVaultPath()
+      # Native callback is responsible for calling webview_return — do NOT
+      # reply here, otherwise we'd resolve the promise twice.
+      note_pick_folder(w, id, start.cstring)
+    else:
+      # No native picker on this platform yet — resolve with null so the JS
+      # side can fall back to a text-input prompt.
+      reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
 
@@ -230,11 +260,12 @@ proc resolveIndexHtml(): string =
   raise newException(IOError, "frontend/dist/index.html not found near " & exeDir)
 
 proc main() =
-  note_setup_macos_menu("Note")
+  when defined(macosx):
+    note_setup_macos_menu("DingoNote")
   let w = webview_create(1, nil)  # 1 = enable Web Inspector (right-click → Inspect Element)
   if w == nil:
     quit "webview_create failed"
-  discard webview_set_title(w, "Note")
+  discard webview_set_title(w, "DingoNote")
   discard webview_set_size(w, 1100, 720, hintNone)
 
   let warg = cast[pointer](w)
@@ -256,10 +287,14 @@ proc main() =
   discard webview_bind(w, "pickFolder", cbPickFolder, warg)
   discard webview_bind(w, "saveAttachment", cbSaveAttachment, warg)
 
-  # loadFileURL:allowingReadAccessToURL: grants the page read access to any
-  # file under `/`, so vault images (e.g. file:///Users/.../attachments/x.png)
-  # load correctly without CORS errors.
-  note_load_with_access(w, resolveIndexHtml().cstring, "/".cstring)
+  when defined(macosx):
+    # loadFileURL:allowingReadAccessToURL: grants the page read access to any
+    # file under `/`, so vault images (e.g. file:///Users/.../attachments/x.png)
+    # load correctly without CORS errors. WebKitGTK / WebView2 don't have the
+    # same sandboxing, so a plain navigate works for them.
+    note_load_with_access(w, resolveIndexHtml().cstring, "/".cstring)
+  else:
+    discard webview_navigate(w, ("file://" & resolveIndexHtml()).cstring)
 
   discard webview_run(w)
   discard webview_destroy(w)
