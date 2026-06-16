@@ -95,6 +95,66 @@ proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+# ── Template callbacks ───────────────────────────────────────────────────────
+
+proc cbTplList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let arr = newJArray()
+    for m in listTemplates():
+      arr.add toJson(m)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbTplLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let n = loadTemplate(args[0].getStr())
+    if n.isSome:
+      reply(w, id, toJson(n.get))
+    else:
+      reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbTplSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    saveTemplate(args[0].getStr(), args[1].getStr(), args[2].getStr())
+    reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbTplCreate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    reply(w, id, toJson(createTemplate()))
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbTplDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    deleteTemplate(args[0].getStr())
+    reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let arr = newJArray()
+    for h in searchTemplates(args[0].getStr()):
+      arr.add toJson(h)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 # ── Entry ────────────────────────────────────────────────────────────────────
 
 proc resolveIndexHtml(): string =
@@ -122,6 +182,12 @@ proc main() =
   discard webview_bind(w, "noteCreate", cbCreate, warg)
   discard webview_bind(w, "noteDelete", cbDelete, warg)
   discard webview_bind(w, "noteSearch", cbSearch, warg)
+  discard webview_bind(w, "templateList", cbTplList, warg)
+  discard webview_bind(w, "templateLoad", cbTplLoad, warg)
+  discard webview_bind(w, "templateSave", cbTplSave, warg)
+  discard webview_bind(w, "templateCreate", cbTplCreate, warg)
+  discard webview_bind(w, "templateDelete", cbTplDelete, warg)
+  discard webview_bind(w, "templateSearch", cbTplSearch, warg)
 
   let url = "file://" & resolveIndexHtml()
   discard webview_navigate(w, url.cstring)

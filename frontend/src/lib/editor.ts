@@ -493,11 +493,28 @@ const Spreadsheet = TiptapNode.create({
 
 // ── Slash commands ──────────────────────────────────────────────────────────
 
+export interface TemplateRef {
+  id: string
+  title: string
+}
+
+let templatesProvider: () => TemplateRef[] = () => []
+let templateLoader: (id: string) => Promise<{ content: string } | null> =
+  async () => null
+
+export function setTemplatesProvider(
+  provider: () => TemplateRef[],
+  loader: (id: string) => Promise<{ content: string } | null>,
+) {
+  templatesProvider = provider
+  templateLoader = loader
+}
+
 interface SlashItem {
   title: string
   shortcut: string
   keywords: string[]
-  run: (editor: Editor) => void
+  run: (editor: Editor) => void | Promise<void>
 }
 
 const SLASH_ITEMS: SlashItem[] = [
@@ -576,10 +593,28 @@ const SLASH_ITEMS: SlashItem[] = [
   },
 ]
 
+function templateSlashItems(): SlashItem[] {
+  return templatesProvider().map((t) => ({
+    title: t.title || 'Untitled template',
+    shortcut: '/tmpl',
+    keywords: ['template', 'tmpl', (t.title || '').toLowerCase()].filter(
+      Boolean,
+    ),
+    run: async (editor) => {
+      const full = await templateLoader(t.id)
+      if (!full) return
+      const parser = (editor.storage as any).markdown?.parser
+      const html = parser?.parse?.(full.content) ?? ''
+      editor.chain().focus().insertContent(html).run()
+    },
+  }))
+}
+
 function filterSlashItems(query: string): SlashItem[] {
   const q = query.toLowerCase().trim()
-  if (!q) return SLASH_ITEMS
-  return SLASH_ITEMS.filter((item) => {
+  const all = [...SLASH_ITEMS, ...templateSlashItems()]
+  if (!q) return all
+  return all.filter((item) => {
     if (item.title.toLowerCase().includes(q)) return true
     if (item.shortcut.toLowerCase().includes(q)) return true
     return item.keywords.some((k) => k.toLowerCase().includes(q))
