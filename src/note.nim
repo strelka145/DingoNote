@@ -1,4 +1,4 @@
-import std/[json, options, os, strutils]
+import std/[json, options, os]
 import webview
 import storage
 
@@ -13,9 +13,16 @@ when defined(macosx):
   {.compile: "../vendor/macos_dialog/dialog.mm".}
   {.compile: "../vendor/macos_loader/loader.mm".}
   proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
+  proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
+elif defined(linux):
+  {.compile: "../vendor/linux_pdf/pdf.cc".}
+  {.compile: "../vendor/linux_dialog/dialog.cc".}
+
+# Shared signatures — both macOS .mm and Linux .cc files export these
+# with C linkage, so a single Nim declaration covers both platforms.
+when defined(macosx) or defined(linux):
   proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
   proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
-  proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
 
 const platformName: string =
   when defined(macosx): "macos"
@@ -23,8 +30,8 @@ const platformName: string =
   elif defined(windows): "windows"
   else: "unknown"
 
-const hasNativePdfExport = defined(macosx)
-const hasNativeFolderPicker = defined(macosx)
+const hasNativePdfExport = defined(macosx) or defined(linux)
+const hasNativeFolderPicker = defined(macosx) or defined(linux)
 
 # ── JSON marshalling ──────────────────────────────────────────────────────────
 
@@ -179,7 +186,7 @@ proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    when defined(macosx):
+    when defined(macosx) or defined(linux):
       let args = parseJson($req).getElems()
       let defaultName =
         if args.len > 0 and args[0].kind == JString: args[0].getStr()
@@ -222,7 +229,7 @@ proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    when defined(macosx):
+    when defined(macosx) or defined(linux):
       let args = parseJson($req).getElems()
       let start =
         if args.len > 0 and args[0].kind == JString: args[0].getStr()
