@@ -112,3 +112,57 @@ textarea {
   font-size: 12px;
   text-align: center;
 }
+
+/* Layout used by the in-process PDF export. Hides chrome and forces a
+   light-on-white look so the captured WKWebView snapshot looks like paper.
+   Also unwinds the app's flex/overflow constraints so the document height
+   expands to fit *all* content (otherwise WKWebView's createPDF only
+   captures the visible viewport). */
+html:has(body.exporting),
+body.exporting,
+body.exporting #app {
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+body.exporting aside,
+body.exporting footer.status,
+body.exporting .spreadsheet-toolbar,
+body.exporting .image-resize-handle,
+body.exporting .slash-menu {
+  display: none !important;
+}
+body.exporting main {
+  display: block !important;
+  height: auto !important;
+}
+body.exporting .editor {
+  display: block !important;
+  height: auto !important;
+  overflow: visible !important;
+  background: white;
+  color: #1a1a1f;
+}
+body.exporting .title-input {
+  padding: 40px 48px 12px;
+  color: #1a1a1f;
+  background: white;
+  display: block;
+  width: 100%;
+}
+body.exporting .body {
+  padding: 8px 48px 40px;
+  overflow: visible !important;
+  height: auto !important;
+  flex: none !important;
+  background: white;
+  background-image: none !important;
+}
+body.exporting .body .ProseMirror,
+body.exporting .body .ProseMirror * {
+  color: #1a1a1f !important;
+}
+body.exporting .body .ProseMirror code,
+body.exporting .body .ProseMirror pre {
+  background: #f4f4f6 !important;
+}

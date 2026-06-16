@@ -107,6 +107,40 @@
     }
   }
 
+  let exporting = $state(false)
+
+  async function exportPDF() {
+    if (!current || exporting) return
+    await flushSave()
+    const safeTitle = (current.title || 'untitled')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .trim() || 'untitled'
+    const filename = `${safeTitle}.pdf`
+
+    exporting = true
+    document.body.classList.add('exporting')
+    // Let layout reflow before capture.
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+
+    const done = new Promise<string>((resolve) => {
+      const handler = (ev: Event) => {
+        const detail = (ev as CustomEvent).detail
+        window.removeEventListener('pdfexport', handler)
+        resolve(detail?.status ?? 'unknown')
+      }
+      window.addEventListener('pdfexport', handler, { once: true })
+    })
+
+    try {
+      await api.exportPDF(filename)
+      await done
+    } finally {
+      document.body.classList.remove('exporting')
+      exporting = false
+    }
+  }
+
   async function select(id: string) {
     await flushSave()
     if (current?.id === id) return
@@ -299,7 +333,16 @@
         <div class="body" bind:this={editorEl}></div>
       {/key}
       <footer class="status">
-        {dirty ? 'Saving…' : 'Saved'}
+        <button
+          class="export-btn"
+          onclick={exportPDF}
+          disabled={exporting}
+          onmousedown={(e) => e.preventDefault()}
+          title="Export as PDF"
+        >
+          {exporting ? 'Exporting…' : 'Export PDF'}
+        </button>
+        <span class="status-text">{dirty ? 'Saving…' : 'Saved'}</span>
       </footer>
     {:else}
       <div class="empty">
@@ -759,8 +802,31 @@
   .status {
     font-size: 11px;
     color: var(--text-dim);
-    padding: 6px 32px 10px;
+    padding: 6px 16px 6px 32px;
     border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .status-text {
+    margin-left: auto;
+  }
+  .export-btn {
+    padding: 2px 10px;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+  }
+  .export-btn:hover {
+    background: var(--bg-hover);
+  }
+  .export-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
   }
 
   .empty {

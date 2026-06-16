@@ -13,6 +13,7 @@ interface NoteApi {
   createTemplate(): Promise<NoteMeta>
   deleteTemplate(id: string): Promise<void>
   searchTemplates(query: string): Promise<SearchHit[]>
+  exportPDF(filename: string): Promise<void>
 }
 
 declare global {
@@ -29,6 +30,7 @@ declare global {
     templateCreate?: () => Promise<NoteMeta>
     templateDelete?: (id: string) => Promise<void>
     templateSearch?: (query: string) => Promise<SearchHit[]>
+    exportPDF?: (filename: string) => Promise<void>
   }
 }
 
@@ -47,6 +49,7 @@ function nimApi(): NoteApi {
     createTemplate: () => window.templateCreate!(),
     deleteTemplate: (id) => window.templateDelete!(id),
     searchTemplates: (query) => window.templateSearch!(query),
+    exportPDF: (filename) => window.exportPDF!(filename),
   }
 }
 
@@ -157,6 +160,9 @@ function localApi(): NoteApi {
     },
     async searchTemplates(query) {
       return search(templates.load(), query)
+    },
+    async exportPDF() {
+      window.print()
     },
   }
 }
