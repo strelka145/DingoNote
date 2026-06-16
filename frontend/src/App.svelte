@@ -1,11 +1,15 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { Editor } from '@tiptap/core'
-  import { editorExtensions } from './lib/editor'
+  import { editorExtensions, setTemplatesProvider } from './lib/editor'
   import { api } from './lib/api'
-  import type { Note, SearchHit } from './lib/types'
+  import type { Note, NoteMeta, SearchHit } from './lib/types'
 
+  type Mode = 'notes' | 'templates'
+
+  let mode = $state<Mode>('notes')
   let notes = $state<SearchHit[]>([])
+  let templates: NoteMeta[] = []
   let current = $state<Note | null>(null)
   let saveTimer: number | null = null
   let dirty = $state(false)
@@ -17,8 +21,49 @@
   let searchInput: HTMLInputElement | undefined = $state()
   let searchTimer: number | null = null
 
+  setTemplatesProvider(
+    () => templates.map((t) => ({ id: t.id, title: t.title })),
+    (id) => api.loadTemplate(id),
+  )
+
+  function scopeApi() {
+    return mode === 'notes'
+      ? {
+          list: api.listNotes,
+          load: api.loadNote,
+          save: api.saveNote,
+          create: api.createNote,
+          del: api.deleteNote,
+          search: api.searchNotes,
+        }
+      : {
+          list: api.listTemplates,
+          load: api.loadTemplate,
+          save: api.saveTemplate,
+          create: api.createTemplate,
+          del: api.deleteTemplate,
+          search: api.searchTemplates,
+        }
+  }
+
+  async function refreshTemplates() {
+    templates = await api.listTemplates()
+  }
+
   async function refresh() {
-    notes = await api.searchNotes(searchQuery)
+    notes = await scopeApi().search(searchQuery)
+    if (mode === 'templates') templates = notes
+    else await refreshTemplates()
+  }
+
+  async function switchMode(next: Mode) {
+    if (next === mode) return
+    await flushSave()
+    mode = next
+    current = null
+    searchQuery = ''
+    clearPendingDelete()
+    await refresh()
   }
 
   function debouncedSearch() {
@@ -65,15 +110,15 @@
   async function select(id: string) {
     await flushSave()
     if (current?.id === id) return
-    current = await api.loadNote(id)
+    current = await scopeApi().load(id)
     dirty = false
   }
 
   async function newNote() {
     await flushSave()
-    const meta = await api.createNote()
+    const meta = await scopeApi().create()
     await refresh()
-    current = await api.loadNote(meta.id)
+    current = await scopeApi().load(meta.id)
     dirty = false
   }
 
@@ -89,7 +134,7 @@
     ev.stopPropagation()
     if (pendingDeleteId === id) {
       clearPendingDelete()
-      await api.deleteNote(id)
+      await scopeApi().del(id)
       if (current?.id === id) current = null
       await refresh()
       return
@@ -124,7 +169,7 @@
     if (!current || !dirty) return
     const { id, title, content } = current
     dirty = false
-    await api.saveNote(id, title, content)
+    await scopeApi().save(id, title, content)
     await refresh()
   }
 
@@ -172,8 +217,18 @@
 <main>
   <aside>
     <header>
-      <h1>Notes</h1>
-      <button class="new" onclick={newNote} aria-label="New note">+</button>
+      <div class="tabs">
+        <button
+          class:active={mode === 'notes'}
+          onclick={() => switchMode('notes')}>Notes</button>
+        <button
+          class:active={mode === 'templates'}
+          onclick={() => switchMode('templates')}>Templates</button>
+      </div>
+      <button
+        class="new"
+        onclick={newNote}
+        aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
     </header>
     <div class="search">
       <input
@@ -222,7 +277,11 @@
       {/each}
       {#if notes.length === 0}
         <li class="empty-list">
-          {searchQuery ? 'No matches' : 'No notes yet'}
+          {searchQuery
+            ? 'No matches'
+            : mode === 'notes'
+              ? 'No notes yet'
+              : 'No templates yet'}
         </li>
       {/if}
     </ul>
@@ -244,8 +303,13 @@
       </footer>
     {:else}
       <div class="empty">
-        <p>Select a note or create a new one</p>
-        <button class="new-big" onclick={newNote}>+ New Note</button>
+        <p>
+          {mode === 'notes'
+            ? 'Select a note or create a new one'
+            : 'Select a template, or create one to insert with /'}
+        </p>
+        <button class="new-big" onclick={newNote}
+          >+ New {mode === 'notes' ? 'Note' : 'Template'}</button>
       </div>
     {/if}
   </section>
@@ -274,13 +338,26 @@
     border-bottom: 1px solid var(--border);
   }
 
-  aside header h1 {
-    font-size: 14px;
+  .tabs {
+    display: flex;
+    gap: 2px;
+  }
+  .tabs button {
+    font-size: 11px;
     font-weight: 600;
-    margin: 0;
-    color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: var(--text-dim);
+  }
+  .tabs button:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+  .tabs button.active {
+    background: var(--bg-active);
+    color: var(--text);
   }
 
   .new {
