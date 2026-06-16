@@ -3,6 +3,9 @@
 ## subdirectory, hidden by leading dot).
 
 import std/[os, strutils, algorithm, times, oids, options]
+import config
+
+var gConfig: Config = loadConfig()
 
 type
   NoteMeta* = object
@@ -23,12 +26,20 @@ type
     snippet*: string
 
 proc dataDir*(): string =
-  result = getHomeDir() / "Documents" / "Note"
+  result =
+    if gConfig.vaultPath.len > 0: gConfig.vaultPath
+    else: defaultVaultPath()
   createDir(result)
 
 proc templatesDir*(): string =
   result = dataDir() / ".templates"
   createDir(result)
+
+proc getVaultPath*(): string = dataDir()
+
+proc setVaultPath*(path: string) =
+  gConfig.vaultPath = path
+  saveConfig(gConfig)
 
 proc parseTitleAndBody(full: string): tuple[title, body: string] =
   let lines = full.splitLines

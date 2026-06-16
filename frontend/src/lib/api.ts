@@ -14,6 +14,9 @@ interface NoteApi {
   deleteTemplate(id: string): Promise<void>
   searchTemplates(query: string): Promise<SearchHit[]>
   exportPDF(filename: string): Promise<void>
+  configGet(): Promise<{ vaultPath: string }>
+  configSet(config: { vaultPath?: string }): Promise<{ vaultPath: string }>
+  pickFolder(startPath?: string): Promise<string>
 }
 
 declare global {
@@ -31,6 +34,11 @@ declare global {
     templateDelete?: (id: string) => Promise<void>
     templateSearch?: (query: string) => Promise<SearchHit[]>
     exportPDF?: (filename: string) => Promise<void>
+    configGet?: () => Promise<{ vaultPath: string }>
+    configSet?: (
+      config: { vaultPath?: string },
+    ) => Promise<{ vaultPath: string }>
+    pickFolder?: (startPath?: string) => Promise<string>
   }
 }
 
@@ -50,6 +58,9 @@ function nimApi(): NoteApi {
     deleteTemplate: (id) => window.templateDelete!(id),
     searchTemplates: (query) => window.templateSearch!(query),
     exportPDF: (filename) => window.exportPDF!(filename),
+    configGet: () => window.configGet!(),
+    configSet: (c) => window.configSet!(c),
+    pickFolder: (s) => window.pickFolder!(s ?? ''),
   }
 }
 
@@ -163,6 +174,19 @@ function localApi(): NoteApi {
     },
     async exportPDF() {
       window.print()
+    },
+    async configGet() {
+      const raw = localStorage.getItem('note-app-config')
+      return raw ? JSON.parse(raw) : { vaultPath: '~/Documents/Note' }
+    },
+    async configSet(c) {
+      const cur = await this.configGet()
+      const next = { ...cur, ...c }
+      localStorage.setItem('note-app-config', JSON.stringify(next))
+      return next
+    },
+    async pickFolder() {
+      return prompt('Vault path:') ?? ''
     },
   }
 }
