@@ -1,0 +1,16 @@
+# Nim build artifacts
+nimcache/
+nimblecache/
+htmldocs/
+note
+note.exe
+*.dylib
+*.so
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editor
+.DS_Store
+.vscode/
