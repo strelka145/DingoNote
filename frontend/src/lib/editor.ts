@@ -9,7 +9,7 @@ import { TableKit } from '@tiptap/extension-table'
 import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
-import { Plugin } from '@tiptap/pm/state'
+import { Plugin, PluginKey } from '@tiptap/pm/state'
 import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
@@ -510,6 +510,20 @@ export function setTemplatesProvider(
   templateLoader = loader
 }
 
+// Wiki-style cross-note links. App.svelte supplies the title list and the
+// navigation callback; the editor uses these from the wikilink node's click
+// handler and from the `[[…]]` autocomplete.
+let wikilinkTitles: () => string[] = () => []
+let wikilinkNavigate: (title: string) => void = () => {}
+
+export function setWikilinkContext(
+  titles: () => string[],
+  navigate: (title: string) => void,
+) {
+  wikilinkTitles = titles
+  wikilinkNavigate = navigate
+}
+
 interface SlashItem {
   title: string
   shortcut: string
@@ -726,6 +740,7 @@ const SlashCommands = Extension.create({
     return [
       Suggestion({
         editor,
+        pluginKey: new PluginKey('slash-commands'),
         char: '/',
         startOfLine: false,
         allowSpaces: false,
@@ -775,6 +790,258 @@ const SlashCommands = Extension.create({
             },
             onExit: () => {
               menu?.destroy()
+              menu = null
+            },
+          }
+        },
+      }),
+    ]
+  },
+})
+
+// ── WikiLink node ────────────────────────────────────────────────────────────
+
+const WikiLink = TiptapNode.create({
+  name: 'wikilink',
+  inline: true,
+  group: 'inline',
+  atom: true,
+  selectable: true,
+
+  addAttributes() {
+    return {
+      title: { default: '' },
+    }
+  },
+
+  parseHTML() {
+    return [
+      {
+        tag: 'a[data-wikilink]',
+        getAttrs: (el) => ({
+          title: (el as HTMLElement).getAttribute('data-wikilink') ?? '',
+        }),
+      },
+    ]
+  },
+
+  renderHTML({ node }) {
+    const t = String(node.attrs.title ?? '')
+    return [
+      'a',
+      {
+        'data-wikilink': t,
+        href: '#',
+        class: 'wikilink',
+      },
+      t,
+    ]
+  },
+
+  addNodeView() {
+    return ({ node }) => {
+      const a = document.createElement('a')
+      a.className = 'wikilink'
+      a.setAttribute('data-wikilink', node.attrs.title)
+      a.setAttribute('href', '#')
+      a.textContent = node.attrs.title
+      a.contentEditable = 'false'
+      const updateExists = () => {
+        const exists = wikilinkTitles().includes(node.attrs.title)
+        a.classList.toggle('missing', !exists)
+      }
+      updateExists()
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        wikilinkNavigate(node.attrs.title)
+      })
+      return {
+        dom: a,
+        update(updated) {
+          if (updated.type.name !== 'wikilink') return false
+          a.setAttribute('data-wikilink', updated.attrs.title)
+          a.textContent = updated.attrs.title
+          updateExists()
+          return true
+        },
+      }
+    }
+  },
+
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state: any, node: any) {
+          state.write(`[[${node.attrs.title}]]`)
+        },
+        parse: {
+          setup(md: any) {
+            md.inline.ruler.before(
+              'emphasis',
+              'wikilink',
+              (state: any, silent: boolean) => {
+                if (state.src.charCodeAt(state.pos) !== 0x5b) return false
+                if (state.src.charCodeAt(state.pos + 1) !== 0x5b) return false
+                const close = state.src.indexOf(']]', state.pos + 2)
+                if (close < 0) return false
+                const title = state.src.slice(state.pos + 2, close)
+                // Empty or containing newline/[ rejected
+                if (
+                  title.length === 0 ||
+                  /[\[\n]/.test(title)
+                ) return false
+                if (!silent) {
+                  const token = state.push('wikilink', '', 0)
+                  token.content = title
+                }
+                state.pos = close + 2
+                return true
+              },
+            )
+            md.renderer.rules.wikilink = (tokens: any[], idx: number) => {
+              const t = tokens[idx].content
+              const escaped = t
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+              return `<a data-wikilink="${escaped}" href="#">${escaped}</a>`
+            }
+          },
+        },
+      },
+    }
+  },
+})
+
+// ── WikiLink autocomplete (Suggestion on [[) ────────────────────────────────
+
+const WikiLinkSuggestion = Extension.create({
+  name: 'wikilinkSuggestion',
+  addProseMirrorPlugins() {
+    const editor = this.editor
+    return [
+      Suggestion({
+        editor,
+        pluginKey: new PluginKey('wikilink-suggestion'),
+        char: '[[',
+        startOfLine: false,
+        allowSpaces: true,
+        items: ({ query }) => {
+          const q = query.toLowerCase().trim()
+          const all = wikilinkTitles().filter(Boolean)
+          if (!q) return all.slice(0, 50)
+          return all.filter((t) => t.toLowerCase().includes(q)).slice(0, 50)
+        },
+        command: ({ editor, range, props }) => {
+          const title = String(props)
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .insertContent({ type: 'wikilink', attrs: { title } })
+            .insertContent(' ')
+            .run()
+        },
+        render: () => {
+          let menu: HTMLDivElement | null = null
+          let items: string[] = []
+          let selected = 0
+          let latest: any = null
+
+          const renderMenu = () => {
+            if (!menu) return
+            menu.innerHTML = ''
+            if (items.length === 0) {
+              const empty = document.createElement('div')
+              empty.className = 'slash-empty'
+              empty.textContent = 'No matching notes'
+              menu.appendChild(empty)
+              return
+            }
+            items.forEach((title, i) => {
+              const row = document.createElement('div')
+              row.className = 'slash-item' + (i === selected ? ' active' : '')
+              const t = document.createElement('span')
+              t.className = 'slash-title'
+              t.textContent = title
+              row.appendChild(t)
+              row.addEventListener('mouseenter', () => {
+                if (i === selected) return
+                selected = i
+                menu!.querySelectorAll('.slash-item').forEach((el, idx) =>
+                  el.classList.toggle('active', idx === i),
+                )
+              })
+              row.addEventListener('click', () => latest?.command(title))
+              menu!.appendChild(row)
+            })
+          }
+
+          const position = (rect: DOMRect | null) => {
+            if (!menu || !rect) return
+            const { innerHeight, innerWidth } = window
+            const h = menu.offsetHeight || 200
+            const w = menu.offsetWidth || 240
+            let top = rect.bottom + 4
+            if (top + h > innerHeight - 8) top = rect.top - h - 4
+            let left = rect.left
+            if (left + w > innerWidth - 8) left = innerWidth - w - 8
+            menu.style.top = `${Math.max(8, top)}px`
+            menu.style.left = `${Math.max(8, left)}px`
+          }
+
+          return {
+            onStart: (props: any) => {
+              latest = props
+              menu = document.createElement('div')
+              menu.className = 'slash-menu'
+              menu.addEventListener('mousedown', (e) => e.preventDefault())
+              document.body.appendChild(menu)
+              items = props.items
+              selected = 0
+              renderMenu()
+              position(props.clientRect?.() ?? null)
+            },
+            onUpdate: (props: any) => {
+              latest = props
+              if (!menu) return
+              items = props.items
+              selected = Math.min(selected, Math.max(0, items.length - 1))
+              renderMenu()
+              position(props.clientRect?.() ?? null)
+            },
+            onKeyDown: ({ event }: { event: KeyboardEvent }) => {
+              if (!menu) return false
+              if (event.key === 'ArrowDown') {
+                if (items.length) {
+                  selected = (selected + 1) % items.length
+                  renderMenu()
+                }
+                return true
+              }
+              if (event.key === 'ArrowUp') {
+                if (items.length) {
+                  selected = (selected - 1 + items.length) % items.length
+                  renderMenu()
+                }
+                return true
+              }
+              if (event.key === 'Enter') {
+                if (items[selected] && latest)
+                  latest.command(items[selected])
+                return true
+              }
+              if (event.key === 'Escape') {
+                menu.remove()
+                menu = null
+                return true
+              }
+              return false
+            },
+            onExit: () => {
+              menu?.remove()
               menu = null
             },
           }
@@ -970,7 +1237,9 @@ export const editorExtensions = [
   TableKit.configure({ table: { resizable: true } }),
   ResizableImage,
   Spreadsheet,
+  WikiLink,
   Markdown.configure({ html: true, linkify: true, tightLists: true }),
   SlashCommands,
+  WikiLinkSuggestion,
   ImagePaste,
 ]

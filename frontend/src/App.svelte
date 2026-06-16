@@ -1,7 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { Editor } from '@tiptap/core'
-  import { editorExtensions, setTemplatesProvider } from './lib/editor'
+  import {
+    editorExtensions,
+    setTemplatesProvider,
+    setWikilinkContext,
+  } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
 
@@ -10,6 +14,8 @@
   let mode = $state<Mode>('notes')
   let notes = $state<SearchHit[]>([])
   let templates: NoteMeta[] = []
+  let allNoteTitles: string[] = []
+  let allNoteIndex = new Map<string, string>() // title -> id
   let current = $state<Note | null>(null)
   let saveTimer: number | null = null
   let dirty = $state(false)
@@ -24,6 +30,20 @@
   setTemplatesProvider(
     () => templates.map((t) => ({ id: t.id, title: t.title })),
     (id) => api.loadTemplate(id),
+  )
+
+  setWikilinkContext(
+    () => allNoteTitles,
+    (title) => {
+      const id = allNoteIndex.get(title)
+      if (id) {
+        if (mode !== 'notes') {
+          void switchMode('notes').then(() => select(id))
+        } else {
+          void select(id)
+        }
+      }
+    },
   )
 
   function scopeApi() {
@@ -54,6 +74,11 @@
     notes = await scopeApi().search(searchQuery)
     if (mode === 'templates') templates = notes
     else await refreshTemplates()
+    const all = await api.listNotes()
+    allNoteTitles = all.map((n) => n.title).filter(Boolean)
+    allNoteIndex = new Map(
+      all.filter((n) => n.title).map((n) => [n.title, n.id]),
+    )
   }
 
   async function switchMode(next: Mode) {
@@ -651,6 +676,26 @@
   .body :global(.ProseMirror a) {
     color: var(--accent);
     text-decoration: underline;
+  }
+  .body :global(.ProseMirror a.wikilink) {
+    color: var(--accent);
+    text-decoration: none;
+    background: var(--accent-bg, rgba(103, 80, 164, 0.12));
+    padding: 1px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.95em;
+    white-space: nowrap;
+  }
+  .body :global(.ProseMirror a.wikilink:hover) {
+    filter: brightness(1.1);
+    text-decoration: underline;
+  }
+  .body :global(.ProseMirror a.wikilink.missing) {
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px dashed var(--border);
+    padding: 0 5px;
   }
   .body :global(.ProseMirror strong) {
     font-weight: 700;
