@@ -5,6 +5,7 @@
     editorExtensions,
     setTemplatesProvider,
     setWikilinkContext,
+    setVaultPathProvider,
   } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
@@ -133,6 +134,28 @@
   }
 
   let exporting = $state(false)
+  let showSettings = $state(false)
+  let config = $state<{ vaultPath: string }>({ vaultPath: '' })
+
+  setVaultPathProvider(() => config.vaultPath)
+
+  async function loadConfig() {
+    config = await api.configGet()
+  }
+
+  async function openSettings() {
+    await loadConfig()
+    showSettings = true
+  }
+
+  async function changeVault() {
+    const path = await api.pickFolder(config.vaultPath)
+    if (!path) return
+    await flushSave()
+    config = await api.configSet({ vaultPath: path })
+    current = null
+    await refresh()
+  }
 
   async function exportPDF() {
     if (!current || exporting) return
@@ -270,7 +293,7 @@
     return () => window.removeEventListener('keydown', onGlobalKeyDown)
   })
 
-  refresh()
+  loadConfig().then(() => refresh())
 </script>
 
 <main>
@@ -288,6 +311,11 @@
         class="new"
         onclick={newNote}
         aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+      <button
+        class="settings-btn"
+        onclick={openSettings}
+        aria-label="Settings"
+        title="Settings">⚙</button>
     </header>
     <div class="search">
       <input
@@ -383,6 +411,37 @@
   </section>
 </main>
 
+{#if showSettings}
+  <div
+    class="modal-overlay"
+    onclick={() => (showSettings = false)}
+    role="presentation">
+    <div
+      class="modal"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog">
+      <header class="modal-header">
+        <h2>Settings</h2>
+        <button
+          class="modal-close"
+          onclick={() => (showSettings = false)}
+          aria-label="Close">×</button>
+      </header>
+      <div class="setting-row">
+        <label>Vault Location</label>
+        <div class="setting-control">
+          <code class="path">{config.vaultPath || '(default)'}</code>
+          <button class="setting-btn" onclick={changeVault}>Change…</button>
+        </div>
+        <p class="hint">
+          Notes are stored as .md files in this folder. Templates live in a
+          hidden <code>.templates/</code> subfolder.
+        </p>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   main {
     display: grid;
@@ -426,6 +485,113 @@
   .tabs button.active {
     background: var(--bg-active);
     color: var(--text);
+  }
+  .settings-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+  .settings-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+  }
+  .modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+    min-width: 480px;
+    max-width: 600px;
+    padding: 0;
+  }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .modal-close {
+    width: 26px;
+    height: 26px;
+    border-radius: 4px;
+    font-size: 18px;
+    color: var(--text-dim);
+  }
+  .modal-close:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+  .setting-row {
+    padding: 20px;
+  }
+  .setting-row label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .setting-control {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .path {
+    flex: 1;
+    padding: 6px 10px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .setting-btn {
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .setting-btn:hover {
+    filter: brightness(1.1);
+  }
+  .hint {
+    margin: 12px 0 0;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .hint code {
+    background: var(--bg-elev);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 11px;
   }
 
   .new {

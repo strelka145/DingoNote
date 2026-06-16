@@ -524,6 +524,40 @@ export function setWikilinkContext(
   wikilinkNavigate = navigate
 }
 
+// Vault path provider — used to resolve vault-relative image paths
+// (e.g. "attachments/x.png") to file:// URLs the WKWebView can load.
+let vaultPathProvider: () => string = () => ''
+export function setVaultPathProvider(p: () => string) {
+  vaultPathProvider = p
+}
+
+function resolveImageSrc(src: string): string {
+  if (!src) return src
+  if (/^(https?|data|blob|file):/.test(src)) return src
+  const vp = vaultPathProvider()
+  if (!vp) return src
+  const cleaned = src.replace(/^\.?\/+/, '')
+  return `file://${vp}/${cleaned}`
+}
+
+async function persistImageFile(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const dataUrl = String(reader.result)
+        const { api } = await import('./api')
+        const rel = await api.saveAttachment(dataUrl)
+        resolve(rel)
+      } catch {
+        resolve(null)
+      }
+    }
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(file)
+  })
+}
+
 interface SlashItem {
   title: string
   shortcut: string
@@ -1085,7 +1119,7 @@ const ResizableImage = Image.extend({
       wrapper.className = 'image-wrapper'
 
       const img = document.createElement('img')
-      img.src = node.attrs.src
+      img.src = resolveImageSrc(node.attrs.src)
       if (node.attrs.alt) img.alt = node.attrs.alt
       if (node.attrs.width) img.style.width = `${node.attrs.width}px`
       wrapper.appendChild(img)
@@ -1127,7 +1161,8 @@ const ResizableImage = Image.extend({
         dom: wrapper,
         update(updated) {
           if (updated.type.name !== 'image') return false
-          if (img.src !== updated.attrs.src) img.src = updated.attrs.src
+          const resolved = resolveImageSrc(updated.attrs.src)
+          if (img.src !== resolved) img.src = resolved
           img.alt = updated.attrs.alt ?? ''
           img.style.width = updated.attrs.width
             ? `${updated.attrs.width}px`
@@ -1205,7 +1240,9 @@ const ImagePaste = Extension.create({
             for (const item of imageItems) {
               const file = item.getAsFile()
               if (!file) continue
-              fileToDataURL(file).then((src) => insertImage(src))
+              persistImageFile(file).then((rel) => {
+                if (rel) insertImage(rel)
+              })
             }
             event.preventDefault()
             return true
@@ -1221,7 +1258,9 @@ const ImagePaste = Extension.create({
               top: event.clientY,
             })?.pos
             for (const file of files) {
-              fileToDataURL(file).then((src) => insertImage(src, pos))
+              persistImageFile(file).then((rel) => {
+                if (rel) insertImage(rel, pos)
+              })
             }
             event.preventDefault()
             return true

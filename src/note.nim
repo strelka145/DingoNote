@@ -4,8 +4,12 @@ import storage
 
 {.compile: "../vendor/macos_menu/menu.mm".}
 {.compile: "../vendor/macos_pdf/pdf.mm".}
+{.compile: "../vendor/macos_dialog/dialog.mm".}
+{.compile: "../vendor/macos_loader/loader.mm".}
 proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
 proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
+proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
+proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
 
 # ── JSON marshalling ──────────────────────────────────────────────────────────
 
@@ -169,6 +173,50 @@ proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+# ── Config callbacks ─────────────────────────────────────────────────────────
+
+proc cbConfigGet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let obj = %* {"vaultPath": getVaultPath()}
+    reply(w, id, obj)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    if args.len > 0 and args[0].kind == JObject and args[0].hasKey("vaultPath"):
+      setVaultPath(args[0]["vaultPath"].getStr())
+    let obj = %* {"vaultPath": getVaultPath()}
+    reply(w, id, obj)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let start =
+      if args.len > 0 and args[0].kind == JString: args[0].getStr()
+      else: getVaultPath()
+    # Native callback is responsible for calling webview_return — do NOT
+    # reply here, otherwise we'd resolve the promise twice.
+    note_pick_folder(w, id, start.cstring)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbSaveAttachment(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let url = args[0].getStr()
+    let rel = saveAttachment(url)
+    reply(w, id, %rel)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 # ── Entry ────────────────────────────────────────────────────────────────────
 
 proc resolveIndexHtml(): string =
@@ -203,9 +251,15 @@ proc main() =
   discard webview_bind(w, "templateDelete", cbTplDelete, warg)
   discard webview_bind(w, "templateSearch", cbTplSearch, warg)
   discard webview_bind(w, "exportPDF", cbExportPDF, warg)
+  discard webview_bind(w, "configGet", cbConfigGet, warg)
+  discard webview_bind(w, "configSet", cbConfigSet, warg)
+  discard webview_bind(w, "pickFolder", cbPickFolder, warg)
+  discard webview_bind(w, "saveAttachment", cbSaveAttachment, warg)
 
-  let url = "file://" & resolveIndexHtml()
-  discard webview_navigate(w, url.cstring)
+  # loadFileURL:allowingReadAccessToURL: grants the page read access to any
+  # file under `/`, so vault images (e.g. file:///Users/.../attachments/x.png)
+  # load correctly without CORS errors.
+  note_load_with_access(w, resolveIndexHtml().cstring, "/".cstring)
 
   discard webview_run(w)
   discard webview_destroy(w)
