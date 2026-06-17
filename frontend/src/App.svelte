@@ -22,6 +22,7 @@
   let dirty = $state(false)
   let editorEl: HTMLDivElement | undefined = $state()
   let editor: Editor | null = null
+  let inTable = $state(false)
   let pendingDeleteId = $state<string | null>(null)
   let pendingDeleteTimer: number | null = null
   let searchQuery = $state('')
@@ -272,6 +273,13 @@
       extensions: editorExtensions,
       content: initialContent,
       autofocus: false,
+      // Wider safety zone around the caret before ProseMirror's
+      // scrollIntoView fires — reduces oscillation when typing near
+      // the viewport edges.
+      editorProps: {
+        scrollMargin: 80,
+        scrollThreshold: 80,
+      },
       onUpdate: ({ editor }) => {
         if (!current) return
         const md = (editor.storage as any).markdown.getMarkdown() as string
@@ -282,7 +290,18 @@
       },
     })
     editor = e
+    const syncTableState = () => {
+      inTable = e.isActive('table')
+    }
+    e.on('selectionUpdate', syncTableState)
+    e.on('transaction', syncTableState)
+    e.on('focus', syncTableState)
+    syncTableState()
     return () => {
+      e.off('selectionUpdate', syncTableState)
+      e.off('transaction', syncTableState)
+      e.off('focus', syncTableState)
+      inTable = false
       e.destroy()
       editor = null
     }
@@ -386,6 +405,40 @@
         <div class="body" bind:this={editorEl}></div>
       {/key}
       <footer class="status">
+        {#if inTable}
+          <div class="table-controls" aria-label="Table actions">
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().addRowAfter().run()}
+              title="Add row below"
+            >+ Row</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().addColumnAfter().run()}
+              title="Add column to the right"
+            >+ Col</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteRow().run()}
+              title="Delete current row"
+            >− Row</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteColumn().run()}
+              title="Delete current column"
+            >− Col</button>
+            <button
+              class="table-btn danger"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteTable().run()}
+              title="Delete the table"
+            >×</button>
+          </div>
+        {/if}
         <button
           class="export-btn"
           onclick={exportPDF}
@@ -758,6 +811,9 @@
   .body {
     flex: 1;
     overflow-y: auto;
+    /* Reserve space for the scrollbar so its appearance doesn't reflow
+       the editor mid-typing and trigger the auto-scroll loop. */
+    scrollbar-gutter: stable;
     padding: 12px 40px 32px;
     background-image:
       linear-gradient(to right, var(--grid) 1px, transparent 1px),
@@ -1022,6 +1078,30 @@
   .status-text {
     margin-left: auto;
   }
+  .table-controls {
+    display: flex;
+    gap: 4px;
+    margin-right: auto;
+  }
+  .table-btn {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .table-btn:hover {
+    background: var(--bg-hover);
+  }
+  .table-btn.danger:hover {
+    background: var(--danger);
+    color: white;
+    border-color: var(--danger);
+  }
+
   .export-btn {
     padding: 2px 10px;
     border-radius: 4px;
