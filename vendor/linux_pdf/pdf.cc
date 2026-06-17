@@ -4,6 +4,12 @@
 // User picks a save location via GtkFileChooserDialog, then we configure
 // GtkPrintSettings to write directly to that path as a PDF and run
 // webkit_print_operation_print() without showing a print dialog.
+//
+// IMPORTANT: webkit_print_operation_print() is async. We must:
+//   1. Set the printer name to "Print to File" (the GTK file backend's
+//      internal printer name) so output is routed to a file, not a printer.
+//   2. Keep the WebKitPrintOperation alive until the "finished" / "failed"
+//      signal fires — releasing it too early cancels the operation.
 
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
@@ -18,12 +24,39 @@ extern "C" {
     int webview_eval(webview_t w, const char* js);
 }
 
+struct PdfCtx {
+    webview_t w;
+    GtkPrintSettings* settings;
+    std::string outPath;
+};
+
 static void notify(webview_t w, const char* status) {
     std::string js =
         "window.dispatchEvent(new CustomEvent('pdfexport',{detail:{status:'";
     js += status;
     js += "'}}))";
     webview_eval(w, js.c_str());
+}
+
+static void on_print_finished(WebKitPrintOperation* op, gpointer user_data) {
+    PdfCtx* ctx = static_cast<PdfCtx*>(user_data);
+    notify(ctx->w, "success");
+    if (ctx->settings) g_object_unref(ctx->settings);
+    g_object_unref(op);
+    delete ctx;
+}
+
+static void on_print_failed(
+    WebKitPrintOperation* op, GError* error, gpointer user_data
+) {
+    PdfCtx* ctx = static_cast<PdfCtx*>(user_data);
+    if (error && error->message) {
+        g_warning("note_export_pdf failed: %s", error->message);
+    }
+    notify(ctx->w, "error");
+    if (ctx->settings) g_object_unref(ctx->settings);
+    g_object_unref(op);
+    delete ctx;
 }
 
 extern "C" void note_export_pdf(webview_t w, const char* default_name) {
@@ -76,17 +109,26 @@ extern "C" void note_export_pdf(webview_t w, const char* default_name) {
         return;
     }
 
-    WebKitPrintOperation* op = webkit_print_operation_new(webView);
     GtkPrintSettings* settings = gtk_print_settings_new();
+    // "Print to File" is the hard-coded name used by GTK's file print
+    // backend (gtkprintbackendfile.c). It is NOT localized when matched
+    // internally, so this works regardless of system language.
+    gtk_print_settings_set_printer(settings, "Print to File");
     gtk_print_settings_set(settings, GTK_PRINT_SETTINGS_OUTPUT_URI, uri);
     gtk_print_settings_set(settings,
         GTK_PRINT_SETTINGS_OUTPUT_FILE_FORMAT, "pdf");
+    g_free(uri);
+
+    WebKitPrintOperation* op = webkit_print_operation_new(webView);
     webkit_print_operation_set_print_settings(op, settings);
 
-    webkit_print_operation_print(op);
-    notify(w, "success");
+    PdfCtx* ctx = new PdfCtx{w, settings, outPath};
+    g_signal_connect(op, "finished",
+        G_CALLBACK(on_print_finished), ctx);
+    g_signal_connect(op, "failed",
+        G_CALLBACK(on_print_failed), ctx);
 
-    g_object_unref(op);
-    g_object_unref(settings);
-    g_free(uri);
+    // Do NOT unref op here — the signal handler will release it once the
+    // async print completes.
+    webkit_print_operation_print(op);
 }
