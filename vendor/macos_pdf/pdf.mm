@@ -42,7 +42,10 @@ extern "C" void note_export_pdf(webview_t w, const char* defaultName) {
         info.bottomMargin = 36;
         info.leftMargin = 36;
         info.rightMargin = 36;
-        info.horizontalPagination = NSPrintingPaginationModeAutomatic;
+        // Fit mode scales the rendered page so the document width fits one
+        // printed page horizontally. Vertical stays Automatic so long
+        // documents paginate down normally.
+        info.horizontalPagination = NSPrintingPaginationModeFit;
         info.verticalPagination = NSPrintingPaginationModeAutomatic;
         info.horizontallyCentered = NO;
         info.verticallyCentered = NO;

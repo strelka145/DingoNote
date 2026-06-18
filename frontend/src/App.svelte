@@ -168,9 +168,50 @@
 
     exporting = true
     document.body.classList.add('exporting')
-    // Let layout reflow before capture.
+    // Let layout reflow (body.exporting narrows #app to print width)
+    // before measurement / capture.
     await new Promise((r) => requestAnimationFrame(() => r(null)))
     await new Promise((r) => requestAnimationFrame(() => r(null)))
+
+    // Per-spreadsheet shrink: text reflows at the print column width
+    // naturally, but jspreadsheet tables don't reflow. For each wider
+    // sheet, apply `zoom` so only that sheet is scaled down, leaving
+    // text and other content at their natural print size.
+    const restoreFns: Array<() => void> = []
+    const editorBody = document.querySelector<HTMLElement>('.body')
+    if (editorBody) {
+      const cs = getComputedStyle(editorBody)
+      const innerWidth =
+        editorBody.clientWidth -
+        parseFloat(cs.paddingLeft || '0') -
+        parseFloat(cs.paddingRight || '0')
+      document
+        .querySelectorAll<HTMLElement>('.spreadsheet-wrapper')
+        .forEach((wrapper) => {
+          // Measure the actual rightmost edge of the spreadsheet's content,
+          // including anything that overflows the wrapper under
+          // `overflow: visible`. `scrollWidth` would miss this.
+          const wLeft = wrapper.getBoundingClientRect().left
+          let maxRight = wLeft
+          wrapper.querySelectorAll<HTMLElement>('*').forEach((el) => {
+            const r = el.getBoundingClientRect()
+            if (r.right > maxRight) maxRight = r.right
+          })
+          const sheetWidth = maxRight - wLeft
+          if (innerWidth > 0 && sheetWidth > innerWidth) {
+            const scale = innerWidth / sheetWidth
+            const prev = (wrapper.style as any).zoom ?? ''
+            ;(wrapper.style as any).zoom = String(scale)
+            restoreFns.push(() => {
+              ;(wrapper.style as any).zoom = prev
+            })
+          }
+        })
+    }
+    if (restoreFns.length) {
+      await new Promise((r) => requestAnimationFrame(() => r(null)))
+      await new Promise((r) => requestAnimationFrame(() => r(null)))
+    }
 
     const done = new Promise<string>((resolve) => {
       const handler = (ev: Event) => {
@@ -185,6 +226,7 @@
       await api.exportPDF(filename)
       await done
     } finally {
+      restoreFns.forEach((fn) => fn())
       document.body.classList.remove('exporting')
       exporting = false
     }

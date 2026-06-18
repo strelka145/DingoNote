@@ -125,6 +125,13 @@ body.exporting #app {
   min-height: 0 !important;
   overflow: visible !important;
 }
+/* Constrain to roughly the Letter printable width so text reflows to a
+   natural print column instead of clipping at the page boundary. */
+body.exporting #app {
+  width: 720px !important;
+  max-width: 720px !important;
+  margin: 0 auto !important;
+}
 body.exporting aside,
 body.exporting footer.status,
 body.exporting .spreadsheet-toolbar,
@@ -164,5 +171,26 @@ body.exporting .body .ProseMirror * {
 }
 body.exporting .body .ProseMirror code,
 body.exporting .body .ProseMirror pre {
+  background: #f4f4f6 !important;
+}
+/* Unclip jspreadsheet so the full table is captured in the PDF — the live
+   wrapper has overflow:hidden + width:100% which truncates wide sheets. */
+body.exporting .spreadsheet-wrapper {
+  overflow: visible !important;
+  border: 1px solid #d0d0d4 !important;
+  background: white !important;
+}
+body.exporting .spreadsheet-wrapper .jss_container,
+body.exporting .spreadsheet-wrapper table.jss {
+  width: auto !important;
+  max-width: none !important;
+}
+body.exporting .spreadsheet-wrapper .jss > thead > tr > td,
+body.exporting .spreadsheet-wrapper .jss > tbody > tr > td {
+  white-space: normal !important;
+  background: white !important;
+  color: #1a1a1f !important;
+}
+body.exporting .spreadsheet-wrapper .jss > thead > tr > td {
   background: #f4f4f6 !important;
 }
