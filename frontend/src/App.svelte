@@ -29,6 +29,40 @@
   let searchInput: HTMLInputElement | undefined = $state()
   let searchTimer: number | null = null
 
+  type SortKey = 'updated-desc' | 'updated-asc' | 'title-asc' | 'title-desc'
+  const SORT_KEYS: ReadonlyArray<SortKey> = [
+    'updated-desc',
+    'updated-asc',
+    'title-asc',
+    'title-desc',
+  ]
+  function loadSortPref(): SortKey {
+    const v = localStorage.getItem('notes-sort') as SortKey | null
+    return v && SORT_KEYS.includes(v) ? v : 'updated-desc'
+  }
+  let sortBy = $state<SortKey>(loadSortPref())
+  $effect(() => {
+    localStorage.setItem('notes-sort', sortBy)
+  })
+
+  const sortedNotes = $derived.by(() => {
+    const list = notes.slice()
+    const t = (n: SearchHit) => (n.title || '').toLowerCase()
+    list.sort((a, b) => {
+      switch (sortBy) {
+        case 'updated-desc':
+          return b.updatedAt - a.updatedAt
+        case 'updated-asc':
+          return a.updatedAt - b.updatedAt
+        case 'title-asc':
+          return t(a).localeCompare(t(b))
+        case 'title-desc':
+          return t(b).localeCompare(t(a))
+      }
+    })
+    return list
+  })
+
   setTemplatesProvider(
     () => templates.map((t) => ({ id: t.id, title: t.title })),
     (id) => api.loadTemplate(id),
@@ -392,8 +426,20 @@
         >
       {/if}
     </div>
+    <div class="sort-bar">
+      <select
+        class="sort-select"
+        bind:value={sortBy}
+        aria-label="Sort {mode}"
+      >
+        <option value="updated-desc">Updated · newest</option>
+        <option value="updated-asc">Updated · oldest</option>
+        <option value="title-asc">Title · A→Z</option>
+        <option value="title-desc">Title · Z→A</option>
+      </select>
+    </div>
     <ul>
-      {#each notes as note (note.id)}
+      {#each sortedNotes as note (note.id)}
         <li>
           <button
             class="row"
@@ -813,6 +859,40 @@
   }
   .search-clear:hover {
     background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .sort-bar {
+    padding: 0 12px 8px;
+  }
+  .sort-select {
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 4px 22px 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+      linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+    background-position:
+      calc(100% - 12px) 50%,
+      calc(100% - 8px) 50%;
+    background-size: 4px 4px, 4px 4px;
+    background-repeat: no-repeat;
+  }
+  .sort-select:hover {
+    background-color: var(--bg-hover);
+    color: var(--text);
+  }
+  .sort-select:focus {
+    outline: none;
+    border-color: var(--accent);
     color: var(--text);
   }
 
