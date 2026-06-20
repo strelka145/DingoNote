@@ -7,6 +7,12 @@ import {
 import StarterKit from '@tiptap/starter-kit'
 import ListItem from '@tiptap/extension-list-item'
 import { TableKit } from '@tiptap/extension-table'
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
+import { common, createLowlight } from 'lowlight'
+import nim from 'highlight.js/lib/languages/nim'
+
+const lowlight = createLowlight(common)
+lowlight.register('nim', nim)
 import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
@@ -1232,15 +1238,31 @@ const ImagePaste = Extension.create({
       new Plugin({
         props: {
           handlePaste(_view, event) {
-            const items = event.clipboardData?.items
-            if (!items) return false
-            const imageItems = Array.from(items).filter((it) =>
-              it.type.startsWith('image/'),
+            const data = event.clipboardData
+            if (!data) return false
+            const items = Array.from(data.items)
+
+            // Excel / Google Sheets / browser copy bundles a rendered image
+            // preview alongside HTML and plain text. If structured content
+            // is present, defer to TipTap so the table / formatted text
+            // gets pasted instead of the image preview.
+            const hasStructuredText = items.some(
+              (it) =>
+                it.kind === 'string' &&
+                (it.type === 'text/html' || it.type === 'text/plain'),
             )
-            if (imageItems.length === 0) return false
-            for (const item of imageItems) {
-              const file = item.getAsFile()
-              if (!file) continue
+            if (hasStructuredText) return false
+
+            // Pure image paste (screenshot tool, image-only clipboard, etc.) —
+            // require kind=file to avoid grabbing in-line image previews.
+            const imageFiles = items
+              .filter(
+                (it) => it.kind === 'file' && it.type.startsWith('image/'),
+              )
+              .map((it) => it.getAsFile())
+              .filter((f): f is File => !!f)
+            if (imageFiles.length === 0) return false
+            for (const file of imageFiles) {
               persistImageFile(file).then((rel) => {
                 if (rel) insertImage(rel)
               })
@@ -1281,8 +1303,9 @@ const FlexibleListItem = ListItem.extend({
 })
 
 export const editorExtensions = [
-  StarterKit.configure({ listItem: false }),
+  StarterKit.configure({ listItem: false, codeBlock: false }),
   FlexibleListItem,
+  CodeBlockLowlight.configure({ lowlight, defaultLanguage: null }),
   TableKit.configure({ table: { resizable: true } }),
   ResizableImage,
   Spreadsheet,
