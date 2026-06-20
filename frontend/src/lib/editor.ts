@@ -5,6 +5,7 @@ import {
   mergeAttributes,
 } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import ListItem from '@tiptap/extension-list-item'
 import { TableKit } from '@tiptap/extension-table'
 import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
@@ -1271,8 +1272,17 @@ const ImagePaste = Extension.create({
   },
 })
 
+// Override the default ListItem so list items can contain any block
+// (code blocks, blockquotes, nested lists, multiple paragraphs, etc.)
+// instead of the StarterKit default `'paragraph block*'` which pins the
+// first child to a plain paragraph.
+const FlexibleListItem = ListItem.extend({
+  content: 'block+',
+})
+
 export const editorExtensions = [
-  StarterKit,
+  StarterKit.configure({ listItem: false }),
+  FlexibleListItem,
   TableKit.configure({ table: { resizable: true } }),
   ResizableImage,
   Spreadsheet,
