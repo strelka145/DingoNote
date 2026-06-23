@@ -138,12 +138,43 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
 
 # ── Notes ───────────────────────────────────────────────────────────────────
 
+proc archiveDir*(): string =
+  result = dataDir() / ".archive"
+  createDir(result)
+
 proc listNotes*(): seq[NoteMeta] = listIn(dataDir())
 proc loadNote*(id: string): Option[Note] = loadFromDir(dataDir(), id)
 proc saveNote*(id, title, content: string) = saveToDir(dataDir(), id, title, content)
 proc createNote*(): NoteMeta = createInDir(dataDir())
-proc deleteNote*(id: string) = deleteInDir(dataDir(), id)
 proc searchNotes*(query: string; limit = 200): seq[SearchHit] = searchIn(dataDir(), query, limit)
+
+# Soft delete: move the note into the archive. The original ID is preserved.
+proc deleteNote*(id: string) =
+  let src = dataDir() / (id & ".md")
+  if not fileExists(src): return
+  let dst = archiveDir() / (id & ".md")
+  if fileExists(dst): removeFile(dst)
+  moveFile(src, dst)
+
+# ── Archive ─────────────────────────────────────────────────────────────────
+
+proc listArchive*(): seq[NoteMeta] = listIn(archiveDir())
+proc loadArchive*(id: string): Option[Note] = loadFromDir(archiveDir(), id)
+proc searchArchive*(query: string; limit = 200): seq[SearchHit] =
+  searchIn(archiveDir(), query, limit)
+
+# Move a note out of the archive back to the active vault.
+proc restoreNote*(id: string) =
+  let src = archiveDir() / (id & ".md")
+  if not fileExists(src): return
+  let dst = dataDir() / (id & ".md")
+  if fileExists(dst): removeFile(dst)
+  moveFile(src, dst)
+
+# Permanently delete from the archive (no recovery).
+proc purgeArchive*(id: string) =
+  let path = archiveDir() / (id & ".md")
+  if fileExists(path): removeFile(path)
 
 # ── Templates ───────────────────────────────────────────────────────────────
 

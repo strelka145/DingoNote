@@ -13,6 +13,11 @@ interface NoteApi {
   createTemplate(): Promise<NoteMeta>
   deleteTemplate(id: string): Promise<void>
   searchTemplates(query: string): Promise<SearchHit[]>
+  listArchive(): Promise<NoteMeta[]>
+  loadArchive(id: string): Promise<Note | null>
+  searchArchive(query: string): Promise<SearchHit[]>
+  restoreNote(id: string): Promise<void>
+  purgeArchive(id: string): Promise<void>
   exportPDF(filename: string): Promise<void>
   configGet(): Promise<{ vaultPath: string }>
   configSet(config: { vaultPath?: string }): Promise<{ vaultPath: string }>
@@ -34,6 +39,11 @@ declare global {
     templateCreate?: () => Promise<NoteMeta>
     templateDelete?: (id: string) => Promise<void>
     templateSearch?: (query: string) => Promise<SearchHit[]>
+    archiveList?: () => Promise<NoteMeta[]>
+    archiveLoad?: (id: string) => Promise<Note | null>
+    archiveSearch?: (query: string) => Promise<SearchHit[]>
+    archiveRestore?: (id: string) => Promise<void>
+    archivePurge?: (id: string) => Promise<void>
     exportPDF?: (filename: string) => Promise<void>
     configGet?: () => Promise<{ vaultPath: string }>
     configSet?: (
@@ -59,6 +69,11 @@ function nimApi(): NoteApi {
     createTemplate: () => window.templateCreate!(),
     deleteTemplate: (id) => window.templateDelete!(id),
     searchTemplates: (query) => window.templateSearch!(query),
+    listArchive: () => window.archiveList!(),
+    loadArchive: (id) => window.archiveLoad!(id),
+    searchArchive: (query) => window.archiveSearch!(query),
+    restoreNote: (id) => window.archiveRestore!(id),
+    purgeArchive: (id) => window.archivePurge!(id),
     exportPDF: (filename) => window.exportPDF!(filename),
     configGet: () => window.configGet!(),
     configSet: (c) => window.configSet!(c),
@@ -76,6 +91,7 @@ function localApi(): NoteApi {
   }
   const notes = makeScope('note-app-data')
   const templates = makeScope('note-app-templates')
+  const archive = makeScope('note-app-archive')
 
   const search = (s: Store, query: string): SearchHit[] => {
     const q = query.trim().toLowerCase()
@@ -140,8 +156,14 @@ function localApi(): NoteApi {
     },
     async deleteNote(id) {
       const s = load()
+      const note = s[id]
+      if (!note) return
       delete s[id]
       persist(s)
+      // Move to archive (soft delete)
+      const a = archive.load()
+      a[id] = { ...note, updatedAt: Date.now() }
+      archive.persist(a)
     },
     async searchNotes(query) {
       return search(load(), query)
@@ -174,6 +196,32 @@ function localApi(): NoteApi {
     },
     async searchTemplates(query) {
       return search(templates.load(), query)
+    },
+    async listArchive() {
+      return Object.values(archive.load())
+        .map((n) => ({ id: n.id, title: n.title, updatedAt: n.updatedAt }))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+    },
+    async loadArchive(id) {
+      return archive.load()[id] ?? null
+    },
+    async searchArchive(query) {
+      return search(archive.load(), query)
+    },
+    async restoreNote(id) {
+      const a = archive.load()
+      const note = a[id]
+      if (!note) return
+      delete a[id]
+      archive.persist(a)
+      const s = load()
+      s[id] = { ...note, updatedAt: Date.now() }
+      persist(s)
+    },
+    async purgeArchive(id) {
+      const a = archive.load()
+      delete a[id]
+      archive.persist(a)
     },
     async exportPDF() {
       window.print()

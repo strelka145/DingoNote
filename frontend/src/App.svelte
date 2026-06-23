@@ -10,7 +10,7 @@
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
 
-  type Mode = 'notes' | 'templates'
+  type Mode = 'notes' | 'templates' | 'archive'
 
   let mode = $state<Mode>('notes')
   let notes = $state<SearchHit[]>([])
@@ -83,23 +83,45 @@
   )
 
   function scopeApi() {
-    return mode === 'notes'
-      ? {
-          list: api.listNotes,
-          load: api.loadNote,
-          save: api.saveNote,
-          create: api.createNote,
-          del: api.deleteNote,
-          search: api.searchNotes,
-        }
-      : {
-          list: api.listTemplates,
-          load: api.loadTemplate,
-          save: api.saveTemplate,
-          create: api.createTemplate,
-          del: api.deleteTemplate,
-          search: api.searchTemplates,
-        }
+    if (mode === 'notes') {
+      return {
+        list: api.listNotes,
+        load: api.loadNote,
+        save: api.saveNote,
+        create: api.createNote,
+        del: api.deleteNote,
+        search: api.searchNotes,
+      }
+    }
+    if (mode === 'templates') {
+      return {
+        list: api.listTemplates,
+        load: api.loadTemplate,
+        save: api.saveTemplate,
+        create: api.createTemplate,
+        del: api.deleteTemplate,
+        search: api.searchTemplates,
+      }
+    }
+    // archive — purge as delete, no save/create
+    return {
+      list: api.listArchive,
+      load: api.loadArchive,
+      save: async () => {},
+      create: async () => {
+        throw new Error('Cannot create in archive')
+      },
+      del: api.purgeArchive,
+      search: api.searchArchive,
+    }
+  }
+
+  async function restoreFromArchive(id: string, ev: Event) {
+    ev.stopPropagation()
+    clearPendingDelete()
+    await api.restoreNote(id)
+    if (current?.id === id) current = null
+    await refresh()
   }
 
   async function refreshTemplates() {
@@ -344,11 +366,13 @@
   $effect(() => {
     if (!editorEl) return
     const initialContent = untrack(() => current?.content ?? '')
+    const isReadOnly = untrack(() => mode === 'archive')
     const e = new Editor({
       element: editorEl,
       extensions: editorExtensions,
       content: initialContent,
       autofocus: false,
+      editable: !isReadOnly,
       // Wider safety zone around the caret before ProseMirror's
       // scrollIntoView fires — reduces oscillation when typing near
       // the viewport edges.
@@ -401,11 +425,17 @@
         <button
           class:active={mode === 'templates'}
           onclick={() => switchMode('templates')}>Templates</button>
+        <button
+          class:active={mode === 'archive'}
+          onclick={() => switchMode('archive')}
+          title="Archive — soft-deleted notes">🗑</button>
       </div>
-      <button
-        class="new"
-        onclick={newNote}
-        aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+      {#if mode !== 'archive'}
+        <button
+          class="new"
+          onclick={newNote}
+          aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+      {/if}
       <button
         class="settings-btn"
         onclick={openSettings}
@@ -461,11 +491,23 @@
               <div class="meta">{formatDate(note.updatedAt)}</div>
             {/if}
           </button>
+          {#if mode === 'archive'}
+            <button
+              class="restore"
+              onclick={(e) => restoreFromArchive(note.id, e)}
+              aria-label="Restore"
+              title="Restore to Notes">↺</button>
+          {/if}
           <button
             class="del"
             class:pending={pendingDeleteId === note.id}
             onclick={(e) => remove(note.id, e)}
-            aria-label={pendingDeleteId === note.id ? 'Confirm delete' : 'Delete'}
+            aria-label={pendingDeleteId === note.id
+              ? mode === 'archive' ? 'Confirm permanent delete' : 'Confirm delete'
+              : mode === 'archive' ? 'Delete forever' : 'Delete'}
+            title={mode === 'archive'
+              ? (pendingDeleteId === note.id ? 'Delete forever — click again to confirm' : 'Delete forever')
+              : (pendingDeleteId === note.id ? 'Click again to confirm' : 'Move to archive')}
           >{pendingDeleteId === note.id ? '✓' : '×'}</button>
         </li>
       {/each}
@@ -475,7 +517,9 @@
             ? 'No matches'
             : mode === 'notes'
               ? 'No notes yet'
-              : 'No templates yet'}
+              : mode === 'templates'
+                ? 'No templates yet'
+                : 'Archive is empty'}
         </li>
       {/if}
     </ul>
@@ -536,7 +580,15 @@
         >
           {exporting ? 'Exporting…' : 'Export PDF'}
         </button>
-        <span class="status-text">{dirty ? 'Saving…' : 'Saved'}</span>
+        <span class="status-text">
+          {#if mode === 'archive'}
+            Archived (read-only)
+          {:else if dirty}
+            Saving…
+          {:else}
+            Saved
+          {/if}
+        </span>
       </footer>
     {:else}
       <div class="empty">
@@ -814,6 +866,31 @@
   .del.pending {
     opacity: 1;
     background: var(--danger);
+    color: white;
+  }
+
+  .restore {
+    position: absolute;
+    right: 32px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1;
+    opacity: 0;
+    transition:
+      opacity 0.1s,
+      background 0.1s,
+      color 0.1s;
+  }
+  li:hover .restore {
+    opacity: 1;
+  }
+  .restore:hover {
+    background: var(--accent);
     color: white;
   }
 

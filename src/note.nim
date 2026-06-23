@@ -123,6 +123,59 @@ proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+# ── Archive callbacks ────────────────────────────────────────────────────────
+
+proc cbArchiveList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let arr = newJArray()
+    for m in listArchive():
+      arr.add toJson(m)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbArchiveLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let n = loadArchive(args[0].getStr())
+    if n.isSome:
+      reply(w, id, toJson(n.get))
+    else:
+      reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbArchiveSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let arr = newJArray()
+    for h in searchArchive(args[0].getStr()):
+      arr.add toJson(h)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbRestore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    restoreNote(args[0].getStr())
+    reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbPurge(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    purgeArchive(args[0].getStr())
+    reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 # ── Template callbacks ───────────────────────────────────────────────────────
 
 proc cbTplList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
@@ -282,6 +335,11 @@ proc main() =
   discard webview_bind(w, "noteCreate", cbCreate, warg)
   discard webview_bind(w, "noteDelete", cbDelete, warg)
   discard webview_bind(w, "noteSearch", cbSearch, warg)
+  discard webview_bind(w, "archiveList", cbArchiveList, warg)
+  discard webview_bind(w, "archiveLoad", cbArchiveLoad, warg)
+  discard webview_bind(w, "archiveSearch", cbArchiveSearch, warg)
+  discard webview_bind(w, "archiveRestore", cbRestore, warg)
+  discard webview_bind(w, "archivePurge", cbPurge, warg)
   discard webview_bind(w, "templateList", cbTplList, warg)
   discard webview_bind(w, "templateLoad", cbTplLoad, warg)
   discard webview_bind(w, "templateSave", cbTplSave, warg)
