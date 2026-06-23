@@ -7,6 +7,7 @@ interface NoteApi {
   createNote(): Promise<NoteMeta>
   deleteNote(id: string): Promise<void>
   duplicateNote(id: string): Promise<NoteMeta>
+  renameWikilinks(oldTitle: string, newTitle: string): Promise<number>
   searchNotes(query: string): Promise<SearchHit[]>
   listTemplates(): Promise<NoteMeta[]>
   loadTemplate(id: string): Promise<Note | null>
@@ -35,6 +36,7 @@ declare global {
     noteCreate?: () => Promise<NoteMeta>
     noteDelete?: (id: string) => Promise<void>
     noteDuplicate?: (id: string) => Promise<NoteMeta>
+    renameWikilinks?: (oldTitle: string, newTitle: string) => Promise<number>
     noteSearch?: (query: string) => Promise<SearchHit[]>
     templateList?: () => Promise<NoteMeta[]>
     templateLoad?: (id: string) => Promise<Note | null>
@@ -66,6 +68,7 @@ function nimApi(): NoteApi {
     createNote: () => window.noteCreate!(),
     deleteNote: (id) => window.noteDelete!(id),
     duplicateNote: (id) => window.noteDuplicate!(id),
+    renameWikilinks: (o, n) => window.renameWikilinks!(o, n),
     searchNotes: (query) => window.noteSearch!(query),
     listTemplates: () => window.templateList!(),
     loadTemplate: (id) => window.templateLoad!(id),
@@ -186,6 +189,24 @@ function localApi(): NoteApi {
       s[newId] = note
       persist(s)
       return { id: newId, title: newTitle, updatedAt: note.updatedAt }
+    },
+    async renameWikilinks(oldTitle, newTitle) {
+      if (!oldTitle || !newTitle || oldTitle === newTitle) return 0
+      const oldRef = `[[${oldTitle}]]`
+      const newRef = `[[${newTitle}]]`
+      let count = 0
+      for (const scope of [notes, templates]) {
+        const s = scope.load() as Store
+        let changed = false
+        for (const id of Object.keys(s)) {
+          if (!s[id].content.includes(oldRef)) continue
+          s[id] = { ...s[id], content: s[id].content.split(oldRef).join(newRef) }
+          changed = true
+          count++
+        }
+        if (changed) scope.persist(s)
+      }
+      return count
     },
     async searchNotes(query) {
       return search(load(), query)

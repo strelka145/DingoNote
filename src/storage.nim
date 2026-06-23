@@ -111,6 +111,21 @@ proc deleteInDir(dir, id: string) =
   if fileExists(path):
     removeFile(path)
 
+proc renameWikilinks*(oldTitle, newTitle: string): int =
+  ## Rewrite `[[oldTitle]]` references in every note/template file to
+  ## `[[newTitle]]`. Returns the count of files actually modified.
+  ## Archive is intentionally skipped — archived files are frozen.
+  if oldTitle.len == 0 or newTitle.len == 0 or oldTitle == newTitle: return 0
+  let oldRef = "[[" & oldTitle & "]]"
+  let newRef = "[[" & newTitle & "]]"
+  for dir in [dataDir(), templatesDir()]:
+    for kind, path in walkDir(dir):
+      if kind != pcFile or not path.endsWith(".md"): continue
+      let content = try: readFile(path) except CatchableError: continue
+      if not content.contains(oldRef): continue
+      writeFile(path, content.replace(oldRef, newRef))
+      inc result
+
 proc duplicateInDir(dir, srcId: string): NoteMeta =
   let srcPath = dir / (srcId & ".md")
   if not fileExists(srcPath):

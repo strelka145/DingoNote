@@ -125,9 +125,11 @@
     ev.stopPropagation()
     clearPendingDelete()
     await flushSave()
+    await commitWikilinkRename()
     const meta = await scopeApi().duplicate(id)
     await refresh()
     current = await scopeApi().load(meta.id)
+    loadedTitle = current?.title ?? null
     dirty = false
   }
 
@@ -137,6 +139,26 @@
     await api.restoreNote(id)
     if (current?.id === id) current = null
     await refresh()
+  }
+
+  // ── Wikilink rename cascade ────────────────────────────────────────────────
+  // Tracks the current note's title at load time so we can detect renames
+  // and rewrite `[[old]]` → `[[new]]` across the vault.
+  let loadedTitle: string | null = null
+
+  async function commitWikilinkRename() {
+    if (!current || loadedTitle === null) return
+    if (mode === 'archive') return // archived notes are frozen
+    const oldT = loadedTitle
+    const newT = current.title
+    if (!oldT || !newT || oldT === newT) {
+      loadedTitle = newT
+      return
+    }
+    try {
+      await api.renameWikilinks(oldT, newT)
+    } catch {}
+    loadedTitle = newT
   }
 
   async function refreshTemplates() {
@@ -157,6 +179,8 @@
   async function switchMode(next: Mode) {
     if (next === mode) return
     await flushSave()
+    await commitWikilinkRename()
+    loadedTitle = null
     mode = next
     current = null
     searchQuery = ''
@@ -305,16 +329,20 @@
 
   async function select(id: string) {
     await flushSave()
+    await commitWikilinkRename()
     if (current?.id === id) return
     current = await scopeApi().load(id)
+    loadedTitle = current?.title ?? null
     dirty = false
   }
 
   async function newNote() {
     await flushSave()
+    await commitWikilinkRename()
     const meta = await scopeApi().create()
     await refresh()
     current = await scopeApi().load(meta.id)
+    loadedTitle = current?.title ?? null
     dirty = false
   }
 
@@ -497,18 +525,6 @@
         >
       {/if}
     </div>
-    <div class="sort-bar">
-      <select
-        class="sort-select"
-        bind:value={sortBy}
-        aria-label="Sort {mode}"
-      >
-        <option value="updated-desc">Updated · newest</option>
-        <option value="updated-asc">Updated · oldest</option>
-        <option value="title-asc">Title · A→Z</option>
-        <option value="title-desc">Title · Z→A</option>
-      </select>
-    </div>
     <ul>
       {#each sortedNotes as note (note.id)}
         <li>
@@ -676,6 +692,24 @@
         <p class="hint">
           Notes are stored as .md files in this folder. Templates live in a
           hidden <code>.templates/</code> subfolder.
+        </p>
+      </div>
+      <div class="setting-row">
+        <label for="sort-pref">Sort order</label>
+        <div class="setting-control">
+          <select
+            id="sort-pref"
+            class="sort-select"
+            bind:value={sortBy}
+          >
+            <option value="updated-desc">Updated · newest</option>
+            <option value="updated-asc">Updated · oldest</option>
+            <option value="title-asc">Title · A→Z</option>
+            <option value="title-desc">Title · Z→A</option>
+          </select>
+        </div>
+        <p class="hint">
+          How notes, templates, and archived items are ordered in the sidebar.
         </p>
       </div>
     </div>
@@ -989,38 +1023,32 @@
     color: var(--text);
   }
 
-  .sort-bar {
-    padding: 0 12px 8px;
-  }
   .sort-select {
-    width: 100%;
     appearance: none;
     -webkit-appearance: none;
-    padding: 4px 22px 4px 8px;
+    padding: 6px 28px 6px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg);
-    color: var(--text-dim);
-    font-size: 11px;
+    color: var(--text);
+    font-size: 13px;
     font-family: inherit;
     cursor: pointer;
     background-image:
       linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
       linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
     background-position:
-      calc(100% - 12px) 50%,
-      calc(100% - 8px) 50%;
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
     background-size: 4px 4px, 4px 4px;
     background-repeat: no-repeat;
   }
   .sort-select:hover {
     background-color: var(--bg-hover);
-    color: var(--text);
   }
   .sort-select:focus {
     outline: none;
     border-color: var(--accent);
-    color: var(--text);
   }
 
   .snippet {

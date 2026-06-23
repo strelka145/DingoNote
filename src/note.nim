@@ -119,6 +119,15 @@ proc cbDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbRenameWikilinks(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let n = renameWikilinks(args[0].getStr(), args[1].getStr())
+    reply(w, id, %n)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -352,6 +361,7 @@ proc main() =
   discard webview_bind(w, "noteDelete", cbDelete, warg)
   discard webview_bind(w, "noteSearch", cbSearch, warg)
   discard webview_bind(w, "noteDuplicate", cbDuplicate, warg)
+  discard webview_bind(w, "renameWikilinks", cbRenameWikilinks, warg)
   discard webview_bind(w, "archiveList", cbArchiveList, warg)
   discard webview_bind(w, "archiveLoad", cbArchiveLoad, warg)
   discard webview_bind(w, "archiveSearch", cbArchiveSearch, warg)
