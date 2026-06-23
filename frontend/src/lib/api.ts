@@ -6,12 +6,14 @@ interface NoteApi {
   saveNote(id: string, title: string, content: string): Promise<void>
   createNote(): Promise<NoteMeta>
   deleteNote(id: string): Promise<void>
+  duplicateNote(id: string): Promise<NoteMeta>
   searchNotes(query: string): Promise<SearchHit[]>
   listTemplates(): Promise<NoteMeta[]>
   loadTemplate(id: string): Promise<Note | null>
   saveTemplate(id: string, title: string, content: string): Promise<void>
   createTemplate(): Promise<NoteMeta>
   deleteTemplate(id: string): Promise<void>
+  duplicateTemplate(id: string): Promise<NoteMeta>
   searchTemplates(query: string): Promise<SearchHit[]>
   listArchive(): Promise<NoteMeta[]>
   loadArchive(id: string): Promise<Note | null>
@@ -32,12 +34,14 @@ declare global {
     noteSave?: (id: string, title: string, content: string) => Promise<void>
     noteCreate?: () => Promise<NoteMeta>
     noteDelete?: (id: string) => Promise<void>
+    noteDuplicate?: (id: string) => Promise<NoteMeta>
     noteSearch?: (query: string) => Promise<SearchHit[]>
     templateList?: () => Promise<NoteMeta[]>
     templateLoad?: (id: string) => Promise<Note | null>
     templateSave?: (id: string, title: string, content: string) => Promise<void>
     templateCreate?: () => Promise<NoteMeta>
     templateDelete?: (id: string) => Promise<void>
+    templateDuplicate?: (id: string) => Promise<NoteMeta>
     templateSearch?: (query: string) => Promise<SearchHit[]>
     archiveList?: () => Promise<NoteMeta[]>
     archiveLoad?: (id: string) => Promise<Note | null>
@@ -61,6 +65,7 @@ function nimApi(): NoteApi {
     saveNote: (id, title, content) => window.noteSave!(id, title, content),
     createNote: () => window.noteCreate!(),
     deleteNote: (id) => window.noteDelete!(id),
+    duplicateNote: (id) => window.noteDuplicate!(id),
     searchNotes: (query) => window.noteSearch!(query),
     listTemplates: () => window.templateList!(),
     loadTemplate: (id) => window.templateLoad!(id),
@@ -68,6 +73,7 @@ function nimApi(): NoteApi {
       window.templateSave!(id, title, content),
     createTemplate: () => window.templateCreate!(),
     deleteTemplate: (id) => window.templateDelete!(id),
+    duplicateTemplate: (id) => window.templateDuplicate!(id),
     searchTemplates: (query) => window.templateSearch!(query),
     listArchive: () => window.archiveList!(),
     loadArchive: (id) => window.archiveLoad!(id),
@@ -165,6 +171,22 @@ function localApi(): NoteApi {
       a[id] = { ...note, updatedAt: Date.now() }
       archive.persist(a)
     },
+    async duplicateNote(id) {
+      const s = load()
+      const src = s[id]
+      if (!src) throw new Error('Source not found')
+      const newId = crypto.randomUUID()
+      const newTitle = src.title ? `${src.title} (copy)` : ''
+      const note: Note = {
+        id: newId,
+        title: newTitle,
+        content: src.content,
+        updatedAt: Date.now(),
+      }
+      s[newId] = note
+      persist(s)
+      return { id: newId, title: newTitle, updatedAt: note.updatedAt }
+    },
     async searchNotes(query) {
       return search(load(), query)
     },
@@ -193,6 +215,22 @@ function localApi(): NoteApi {
       const s = templates.load()
       delete s[id]
       templates.persist(s)
+    },
+    async duplicateTemplate(id) {
+      const s = templates.load()
+      const src = s[id]
+      if (!src) throw new Error('Source not found')
+      const newId = crypto.randomUUID()
+      const newTitle = src.title ? `${src.title} (copy)` : ''
+      const note: Note = {
+        id: newId,
+        title: newTitle,
+        content: src.content,
+        updatedAt: Date.now(),
+      }
+      s[newId] = note
+      templates.persist(s)
+      return { id: newId, title: newTitle, updatedAt: note.updatedAt }
     },
     async searchTemplates(query) {
       return search(templates.load(), query)

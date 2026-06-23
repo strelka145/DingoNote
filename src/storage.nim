@@ -111,6 +111,23 @@ proc deleteInDir(dir, id: string) =
   if fileExists(path):
     removeFile(path)
 
+proc duplicateInDir(dir, srcId: string): NoteMeta =
+  let srcPath = dir / (srcId & ".md")
+  if not fileExists(srcPath):
+    raise newException(IOError, "Source not found: " & srcId)
+  let original = readFile(srcPath)
+  let (origTitle, body) = parseTitleAndBody(original)
+  let newTitle =
+    if origTitle.len > 0: origTitle & " (copy)"
+    else: ""
+  let newId = $genOid()
+  let dstPath = dir / (newId & ".md")
+  let newContent =
+    if newTitle.len > 0: "# " & newTitle & "\n\n" & body
+    else: body
+  writeFile(dstPath, newContent)
+  NoteMeta(id: newId, title: newTitle, updatedAt: mtimeMs(dstPath))
+
 proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
   let q = query.toLowerAscii().strip()
   for kind, path in walkDir(dir):
@@ -146,6 +163,7 @@ proc listNotes*(): seq[NoteMeta] = listIn(dataDir())
 proc loadNote*(id: string): Option[Note] = loadFromDir(dataDir(), id)
 proc saveNote*(id, title, content: string) = saveToDir(dataDir(), id, title, content)
 proc createNote*(): NoteMeta = createInDir(dataDir())
+proc duplicateNote*(id: string): NoteMeta = duplicateInDir(dataDir(), id)
 proc searchNotes*(query: string; limit = 200): seq[SearchHit] = searchIn(dataDir(), query, limit)
 
 # Soft delete: move the note into the archive. The original ID is preserved.
@@ -182,6 +200,7 @@ proc listTemplates*(): seq[NoteMeta] = listIn(templatesDir())
 proc loadTemplate*(id: string): Option[Note] = loadFromDir(templatesDir(), id)
 proc saveTemplate*(id, title, content: string) = saveToDir(templatesDir(), id, title, content)
 proc createTemplate*(): NoteMeta = createInDir(templatesDir())
+proc duplicateTemplate*(id: string): NoteMeta = duplicateInDir(templatesDir(), id)
 proc deleteTemplate*(id: string) = deleteInDir(templatesDir(), id)
 proc searchTemplates*(query: string; limit = 200): seq[SearchHit] = searchIn(templatesDir(), query, limit)
 

@@ -90,6 +90,7 @@
         save: api.saveNote,
         create: api.createNote,
         del: api.deleteNote,
+        duplicate: api.duplicateNote,
         search: api.searchNotes,
       }
     }
@@ -100,10 +101,11 @@
         save: api.saveTemplate,
         create: api.createTemplate,
         del: api.deleteTemplate,
+        duplicate: api.duplicateTemplate,
         search: api.searchTemplates,
       }
     }
-    // archive — purge as delete, no save/create
+    // archive — purge as delete, no save/create/duplicate
     return {
       list: api.listArchive,
       load: api.loadArchive,
@@ -112,8 +114,21 @@
         throw new Error('Cannot create in archive')
       },
       del: api.purgeArchive,
+      duplicate: async (_id: string) => {
+        throw new Error('Cannot duplicate in archive')
+      },
       search: api.searchArchive,
     }
+  }
+
+  async function duplicate(id: string, ev: Event) {
+    ev.stopPropagation()
+    clearPendingDelete()
+    await flushSave()
+    const meta = await scopeApi().duplicate(id)
+    await refresh()
+    current = await scopeApi().load(meta.id)
+    dirty = false
   }
 
   async function restoreFromArchive(id: string, ev: Event) {
@@ -379,6 +394,32 @@
       editorProps: {
         scrollMargin: 80,
         scrollThreshold: 80,
+        // Excel / Google Sheets emit tables with only <td> (no <thead> or
+        // <th>), so TipTap treats every row as a data row and the table
+        // ends up headerless. Promote the first row's cells to <th> when
+        // none are present so pasted tables keep a sensible header.
+        transformPastedHTML(html) {
+          if (!html || !/<table\b/i.test(html)) return html
+          try {
+            const doc = new DOMParser().parseFromString(html, 'text/html')
+            doc.querySelectorAll('table').forEach((table) => {
+              if (table.querySelector('th')) return
+              const firstRow = table.querySelector('tr')
+              if (!firstRow) return
+              firstRow.querySelectorAll('td').forEach((td) => {
+                const th = doc.createElement('th')
+                th.innerHTML = td.innerHTML
+                for (const attr of Array.from(td.attributes)) {
+                  th.setAttribute(attr.name, attr.value)
+                }
+                td.replaceWith(th)
+              })
+            })
+            return doc.body.innerHTML
+          } catch {
+            return html
+          }
+        },
       },
       onUpdate: ({ editor }) => {
         if (!current) return
@@ -497,6 +538,12 @@
               onclick={(e) => restoreFromArchive(note.id, e)}
               aria-label="Restore"
               title="Restore to Notes">↺</button>
+          {:else}
+            <button
+              class="dup"
+              onclick={(e) => duplicate(note.id, e)}
+              aria-label="Duplicate"
+              title="Duplicate">⎘</button>
           {/if}
           <button
             class="del"
@@ -869,7 +916,8 @@
     color: white;
   }
 
-  .restore {
+  .restore,
+  .dup {
     position: absolute;
     right: 32px;
     top: 50%;
@@ -886,10 +934,12 @@
       background 0.1s,
       color 0.1s;
   }
-  li:hover .restore {
+  li:hover .restore,
+  li:hover .dup {
     opacity: 1;
   }
-  .restore:hover {
+  .restore:hover,
+  .dup:hover {
     background: var(--accent);
     color: white;
   }

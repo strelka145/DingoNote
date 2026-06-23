@@ -111,6 +111,14 @@ proc cbDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    reply(w, id, toJson(duplicateNote(args[0].getStr())))
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -225,6 +233,14 @@ proc cbTplDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbTplDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    reply(w, id, toJson(duplicateTemplate(args[0].getStr())))
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -335,6 +351,7 @@ proc main() =
   discard webview_bind(w, "noteCreate", cbCreate, warg)
   discard webview_bind(w, "noteDelete", cbDelete, warg)
   discard webview_bind(w, "noteSearch", cbSearch, warg)
+  discard webview_bind(w, "noteDuplicate", cbDuplicate, warg)
   discard webview_bind(w, "archiveList", cbArchiveList, warg)
   discard webview_bind(w, "archiveLoad", cbArchiveLoad, warg)
   discard webview_bind(w, "archiveSearch", cbArchiveSearch, warg)
@@ -345,6 +362,7 @@ proc main() =
   discard webview_bind(w, "templateSave", cbTplSave, warg)
   discard webview_bind(w, "templateCreate", cbTplCreate, warg)
   discard webview_bind(w, "templateDelete", cbTplDelete, warg)
+  discard webview_bind(w, "templateDuplicate", cbTplDuplicate, warg)
   discard webview_bind(w, "templateSearch", cbTplSearch, warg)
   discard webview_bind(w, "exportPDF", cbExportPDF, warg)
   discard webview_bind(w, "configGet", cbConfigGet, warg)
