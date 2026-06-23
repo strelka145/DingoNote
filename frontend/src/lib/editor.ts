@@ -219,6 +219,23 @@ const Spreadsheet = TiptapNode.create({
         oninsertcolumn: schedule,
         ondeletecolumn: schedule,
         onblur: commitAndFlush,
+        // Put raw cell values (formulas) on the system clipboard instead of
+        // jspreadsheet's default computed/displayed values. Same-sheet paste
+        // already uses the internal buffer (formulas preserved), but cross-sheet
+        // paste goes through the clipboard — without this it would paste values
+        // only. Note: relative references are NOT re-adjusted on cross-sheet
+        // paste (clipboard text bypasses jspreadsheet's offset logic).
+        oncopy: (instance: any, range: number[]) => {
+          const [c1, r1, c2, r2] = range
+          const data = instance.options.data
+          const out: string[] = []
+          for (let r = r1; r <= r2; r++) {
+            const cells: string[] = []
+            for (let c = c1; c <= c2; c++) cells.push(data[r]?.[c] ?? '')
+            out.push(cells.join('\t'))
+          }
+          return out.join('\r\n')
+        },
         onselection: (_inst: any, x1: number, y1: number, x2: number, y2: number) => {
           lastSelection = [
             Math.min(x1, x2),
