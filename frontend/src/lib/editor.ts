@@ -75,25 +75,31 @@ const Spreadsheet = TiptapNode.create({
   isolating: true,
 
   addAttributes() {
+    // The actual values live inside `data-content` as JSON; the per-attribute
+    // parsers below read from there. `renderHTML: () => ({})` suppresses
+    // TipTap's default behaviour of stringifying the attr onto the DOM,
+    // which would otherwise corrupt the 2-D array into
+    // `data="a,b,c,d"` via `Array.prototype.toString()` and break copy-paste.
+    const readData = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').data
+    const readHeaders = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').headers
     return {
-      data: { default: DEFAULT_GRID },
-      headers: { default: [] as string[] },
+      data: {
+        default: DEFAULT_GRID,
+        parseHTML: readData,
+        renderHTML: () => ({}),
+      },
+      headers: {
+        default: [] as string[],
+        parseHTML: readHeaders,
+        renderHTML: () => ({}),
+      },
     }
   },
 
   parseHTML() {
-    return [
-      {
-        tag: 'div[data-spreadsheet]',
-        getAttrs: (el) => {
-          const e = el as HTMLElement
-          const { data, headers } = parseGridJson(
-            e.getAttribute('data-content') ?? '',
-          )
-          return { data, headers }
-        },
-      },
-    ]
+    return [{ tag: 'div[data-spreadsheet]' }]
   },
 
   renderHTML({ node, HTMLAttributes }) {
