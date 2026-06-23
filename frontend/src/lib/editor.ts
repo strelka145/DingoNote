@@ -471,8 +471,13 @@ const Spreadsheet = TiptapNode.create({
           if (headers && headers.some((h) => h && h.length > 0)) {
             out.headers = headers
           }
+          // Keep the JSON on a single line. prosemirror-markdown's
+          // state.write() only prefixes the *start* of a write with the block
+          // delimiter (e.g. list indentation); embedded newlines bypass it, so
+          // multi-line JSON breaks the fence when the spreadsheet is nested in
+          // a list and corrupts the note on the next save/load round-trip.
           state.write('```spreadsheet\n')
-          state.write(JSON.stringify(out, null, 2))
+          state.write(JSON.stringify(out))
           state.ensureNewLine()
           state.write('```')
           state.closeBlock(node)
