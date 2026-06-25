@@ -1,6 +1,7 @@
 export interface NoteMeta {
   id: string
   title: string
+  tags: string[]
   updatedAt: number
 }
 

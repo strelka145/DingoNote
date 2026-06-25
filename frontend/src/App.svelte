@@ -28,6 +28,8 @@
   let searchQuery = $state('')
   let searchInput: HTMLInputElement | undefined = $state()
   let searchTimer: number | null = null
+  let activeTag = $state<string | null>(null)
+  let tagDraft = $state('')
 
   type SortKey = 'updated-desc' | 'updated-asc' | 'title-asc' | 'title-desc'
   const SORT_KEYS: ReadonlyArray<SortKey> = [
@@ -46,7 +48,10 @@
   })
 
   const sortedNotes = $derived.by(() => {
-    const list = notes.slice()
+    let list = notes.slice()
+    if (activeTag) {
+      list = list.filter((n) => (n.tags ?? []).includes(activeTag!))
+    }
     const t = (n: SearchHit) => (n.title || '').toLowerCase()
     list.sort((a, b) => {
       switch (sortBy) {
@@ -161,6 +166,38 @@
     loadedTitle = newT
   }
 
+  function addTag(raw: string) {
+    if (!current) return
+    const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, '-')
+    if (!tag) return
+    const tags = current.tags ?? []
+    if (!tags.includes(tag)) {
+      current.tags = [...tags, tag]
+      scheduleSave()
+    }
+  }
+
+  function removeTag(tag: string) {
+    if (!current) return
+    current.tags = (current.tags ?? []).filter((t) => t !== tag)
+    scheduleSave()
+  }
+
+  function onTagKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+      e.preventDefault()
+      addTag(tagDraft)
+      tagDraft = ''
+    } else if (e.key === 'Backspace' && tagDraft === '') {
+      const tags = current?.tags ?? []
+      if (tags.length) removeTag(tags[tags.length - 1])
+    }
+  }
+
+  function filterByTag(tag: string) {
+    activeTag = activeTag === tag ? null : tag
+  }
+
   async function refreshTemplates() {
     templates = await api.listTemplates()
   }
@@ -184,6 +221,8 @@
     mode = next
     current = null
     searchQuery = ''
+    activeTag = null
+    tagDraft = ''
     clearPendingDelete()
     await refresh()
   }
@@ -400,9 +439,9 @@
       saveTimer = null
     }
     if (!current || !dirty) return
-    const { id, title, content } = current
+    const { id, title, tags, content } = current
     dirty = false
-    await scopeApi().save(id, title, content)
+    await scopeApi().save(id, title, tags ?? [], content)
     await refresh()
   }
 
@@ -534,6 +573,14 @@
         >
       {/if}
     </div>
+    {#if activeTag}
+      <div class="tag-filter">
+        Filtered by <span class="tag-label active">#{activeTag}</span>
+        <button class="tag-filter-clear" onclick={() => (activeTag = null)}
+          >×</button
+        >
+      </div>
+    {/if}
     <ul>
       {#each sortedNotes as note (note.id)}
         <li>
@@ -555,6 +602,15 @@
               </div>
             {:else}
               <div class="meta">{formatDate(note.updatedAt)}</div>
+            {/if}
+            {#if note.tags?.length}
+              <div class="row-tags">
+                {#each note.tags as tag}
+                  <span class="row-tag" class:active={activeTag === tag}
+                    >#{tag}</span
+                  >
+                {/each}
+              </div>
             {/if}
           </button>
           {#if mode === 'archive'}
@@ -605,6 +661,39 @@
         bind:value={current.title}
         oninput={scheduleSave}
       />
+      <div class="tags-bar">
+        {#each current.tags ?? [] as tag (tag)}
+          <span class="tag-chip">
+            <button
+              class="tag-label"
+              onclick={() => filterByTag(tag)}
+              class:active={activeTag === tag}
+              title="Filter by #{tag}">#{tag}</button
+            >
+            {#if mode !== 'archive'}
+              <button
+                class="tag-x"
+                onclick={() => removeTag(tag)}
+                aria-label="Remove tag #{tag}">×</button
+              >
+            {/if}
+          </span>
+        {/each}
+        {#if mode !== 'archive'}
+          <input
+            class="tag-input"
+            placeholder="add tag…"
+            bind:value={tagDraft}
+            onkeydown={onTagKeydown}
+            onblur={() => {
+              if (tagDraft.trim()) {
+                addTag(tagDraft)
+                tagDraft = ''
+              }
+            }}
+          />
+        {/if}
+      </div>
       {#key current.id}
         <div class="body" bind:this={editorEl}></div>
       {/key}
@@ -1112,6 +1201,91 @@
   }
   .title-input::placeholder {
     color: var(--text-dim);
+  }
+
+  /* ── Tags ─────────────────────────────────────────────────────────────── */
+  .tags-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 0 32px 8px;
+  }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .tag-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 2px 4px 2px 9px;
+    cursor: pointer;
+  }
+  .tag-label:hover {
+    color: var(--text);
+  }
+  .tag-label.active {
+    color: var(--accent, #4a9eff);
+    font-weight: 600;
+  }
+  .tag-x {
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-dim);
+    padding: 2px 7px 2px 2px;
+    cursor: pointer;
+  }
+  .tag-x:hover {
+    color: var(--danger, #e5534b);
+  }
+  .tag-input {
+    font-size: 12px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    padding: 2px 4px;
+    width: 90px;
+  }
+  .tag-input::placeholder {
+    color: var(--text-dim);
+  }
+  .row-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .row-tag {
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--bg-elev);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .row-tag.active {
+    color: var(--accent, #4a9eff);
+  }
+  .tag-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 4px 12px;
+    margin: 0 8px;
+  }
+  .tag-filter-clear {
+    margin-left: auto;
+    font-size: 14px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .tag-filter-clear:hover {
+    color: var(--text);
   }
 
   .body {

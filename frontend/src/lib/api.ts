@@ -3,7 +3,12 @@ import type { Note, NoteMeta, SearchHit } from './types'
 interface NoteApi {
   listNotes(): Promise<NoteMeta[]>
   loadNote(id: string): Promise<Note | null>
-  saveNote(id: string, title: string, content: string): Promise<void>
+  saveNote(
+    id: string,
+    title: string,
+    tags: string[],
+    content: string,
+  ): Promise<void>
   createNote(): Promise<NoteMeta>
   deleteNote(id: string): Promise<void>
   duplicateNote(id: string): Promise<NoteMeta>
@@ -11,7 +16,12 @@ interface NoteApi {
   searchNotes(query: string): Promise<SearchHit[]>
   listTemplates(): Promise<NoteMeta[]>
   loadTemplate(id: string): Promise<Note | null>
-  saveTemplate(id: string, title: string, content: string): Promise<void>
+  saveTemplate(
+    id: string,
+    title: string,
+    tags: string[],
+    content: string,
+  ): Promise<void>
   createTemplate(): Promise<NoteMeta>
   deleteTemplate(id: string): Promise<void>
   duplicateTemplate(id: string): Promise<NoteMeta>
@@ -33,7 +43,12 @@ declare global {
   interface Window {
     noteList?: () => Promise<NoteMeta[]>
     noteLoad?: (id: string) => Promise<Note | null>
-    noteSave?: (id: string, title: string, content: string) => Promise<void>
+    noteSave?: (
+      id: string,
+      title: string,
+      tags: string[],
+      content: string,
+    ) => Promise<void>
     noteCreate?: () => Promise<NoteMeta>
     noteDelete?: (id: string) => Promise<void>
     noteDuplicate?: (id: string) => Promise<NoteMeta>
@@ -41,7 +56,12 @@ declare global {
     noteSearch?: (query: string) => Promise<SearchHit[]>
     templateList?: () => Promise<NoteMeta[]>
     templateLoad?: (id: string) => Promise<Note | null>
-    templateSave?: (id: string, title: string, content: string) => Promise<void>
+    templateSave?: (
+      id: string,
+      title: string,
+      tags: string[],
+      content: string,
+    ) => Promise<void>
     templateCreate?: () => Promise<NoteMeta>
     templateDelete?: (id: string) => Promise<void>
     templateDuplicate?: (id: string) => Promise<NoteMeta>
@@ -66,7 +86,8 @@ function nimApi(): NoteApi {
   return {
     listNotes: () => window.noteList!(),
     loadNote: (id) => window.noteLoad!(id),
-    saveNote: (id, title, content) => window.noteSave!(id, title, content),
+    saveNote: (id, title, tags, content) =>
+      window.noteSave!(id, title, tags, content),
     createNote: () => window.noteCreate!(),
     deleteNote: (id) => window.noteDelete!(id),
     duplicateNote: (id) => window.noteDuplicate!(id),
@@ -74,8 +95,8 @@ function nimApi(): NoteApi {
     searchNotes: (query) => window.noteSearch!(query),
     listTemplates: () => window.templateList!(),
     loadTemplate: (id) => window.templateLoad!(id),
-    saveTemplate: (id, title, content) =>
-      window.templateSave!(id, title, content),
+    saveTemplate: (id, title, tags, content) =>
+      window.templateSave!(id, title, tags, content),
     createTemplate: () => window.templateCreate!(),
     deleteTemplate: (id) => window.templateDelete!(id),
     duplicateTemplate: (id) => window.templateDuplicate!(id),
@@ -113,6 +134,7 @@ function localApi(): NoteApi {
         hits.push({
           id: n.id,
           title: n.title,
+          tags: n.tags ?? [],
           updatedAt: n.updatedAt,
           snippet: '',
         })
@@ -120,7 +142,8 @@ function localApi(): NoteApi {
       }
       const titleMatch = n.title.toLowerCase().includes(q)
       const bodyMatch = n.content.toLowerCase().includes(q)
-      if (!titleMatch && !bodyMatch) continue
+      const tagMatch = (n.tags ?? []).some((t) => t.toLowerCase().includes(q))
+      if (!titleMatch && !bodyMatch && !tagMatch) continue
       let snippet = n.title
       if (bodyMatch) {
         const idx = n.content.toLowerCase().indexOf(q)
@@ -134,6 +157,7 @@ function localApi(): NoteApi {
       hits.push({
         id: n.id,
         title: n.title,
+        tags: n.tags ?? [],
         updatedAt: n.updatedAt,
         snippet,
       })
@@ -147,24 +171,40 @@ function localApi(): NoteApi {
   return {
     async listNotes() {
       return Object.values(load())
-        .map((n) => ({ id: n.id, title: n.title, updatedAt: n.updatedAt }))
+        .map((n) => ({
+          id: n.id,
+          title: n.title,
+          tags: n.tags ?? [],
+          updatedAt: n.updatedAt,
+        }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
     },
     async loadNote(id) {
       return load()[id] ?? null
     },
-    async saveNote(id, title, content) {
+    async saveNote(id, title, tags, content) {
       const s = load()
-      s[id] = { id, title, content, updatedAt: Date.now() }
+      s[id] = { id, title, tags, content, updatedAt: Date.now() }
       persist(s)
     },
     async createNote() {
       const id = crypto.randomUUID()
-      const note: Note = { id, title: '', content: '', updatedAt: Date.now() }
+      const note: Note = {
+        id,
+        title: '',
+        tags: [],
+        content: '',
+        updatedAt: Date.now(),
+      }
       const s = load()
       s[id] = note
       persist(s)
-      return { id: note.id, title: note.title, updatedAt: note.updatedAt }
+      return {
+        id: note.id,
+        title: note.title,
+        tags: note.tags,
+        updatedAt: note.updatedAt,
+      }
     },
     async deleteNote(id) {
       const s = load()
@@ -186,12 +226,18 @@ function localApi(): NoteApi {
       const note: Note = {
         id: newId,
         title: newTitle,
+        tags: src.tags ?? [],
         content: src.content,
         updatedAt: Date.now(),
       }
       s[newId] = note
       persist(s)
-      return { id: newId, title: newTitle, updatedAt: note.updatedAt }
+      return {
+        id: newId,
+        title: newTitle,
+        tags: note.tags,
+        updatedAt: note.updatedAt,
+      }
     },
     async renameWikilinks(oldTitle, newTitle) {
       if (!oldTitle || !newTitle || oldTitle === newTitle) return 0
@@ -216,24 +262,40 @@ function localApi(): NoteApi {
     },
     async listTemplates() {
       return Object.values(templates.load())
-        .map((n) => ({ id: n.id, title: n.title, updatedAt: n.updatedAt }))
+        .map((n) => ({
+          id: n.id,
+          title: n.title,
+          tags: n.tags ?? [],
+          updatedAt: n.updatedAt,
+        }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
     },
     async loadTemplate(id) {
       return templates.load()[id] ?? null
     },
-    async saveTemplate(id, title, content) {
+    async saveTemplate(id, title, tags, content) {
       const s = templates.load()
-      s[id] = { id, title, content, updatedAt: Date.now() }
+      s[id] = { id, title, tags, content, updatedAt: Date.now() }
       templates.persist(s)
     },
     async createTemplate() {
       const id = crypto.randomUUID()
-      const note: Note = { id, title: '', content: '', updatedAt: Date.now() }
+      const note: Note = {
+        id,
+        title: '',
+        tags: [],
+        content: '',
+        updatedAt: Date.now(),
+      }
       const s = templates.load()
       s[id] = note
       templates.persist(s)
-      return { id: note.id, title: note.title, updatedAt: note.updatedAt }
+      return {
+        id: note.id,
+        title: note.title,
+        tags: note.tags,
+        updatedAt: note.updatedAt,
+      }
     },
     async deleteTemplate(id) {
       const s = templates.load()
@@ -249,19 +311,30 @@ function localApi(): NoteApi {
       const note: Note = {
         id: newId,
         title: newTitle,
+        tags: src.tags ?? [],
         content: src.content,
         updatedAt: Date.now(),
       }
       s[newId] = note
       templates.persist(s)
-      return { id: newId, title: newTitle, updatedAt: note.updatedAt }
+      return {
+        id: newId,
+        title: newTitle,
+        tags: note.tags,
+        updatedAt: note.updatedAt,
+      }
     },
     async searchTemplates(query) {
       return search(templates.load(), query)
     },
     async listArchive() {
       return Object.values(archive.load())
-        .map((n) => ({ id: n.id, title: n.title, updatedAt: n.updatedAt }))
+        .map((n) => ({
+          id: n.id,
+          title: n.title,
+          tags: n.tags ?? [],
+          updatedAt: n.updatedAt,
+        }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
     },
     async loadArchive(id) {

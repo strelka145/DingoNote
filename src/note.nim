@@ -35,16 +35,22 @@ const hasNativeFolderPicker = defined(macosx) or defined(linux)
 
 # ── JSON marshalling ──────────────────────────────────────────────────────────
 
+proc toJson(tags: seq[string]): JsonNode =
+  result = newJArray()
+  for t in tags: result.add %t
+
 proc toJson(m: NoteMeta): JsonNode =
   result = newJObject()
   result["id"] = %m.id
   result["title"] = %m.title
+  result["tags"] = toJson(m.tags)
   result["updatedAt"] = %m.updatedAt
 
 proc toJson(n: Note): JsonNode =
   result = newJObject()
   result["id"] = %n.id
   result["title"] = %n.title
+  result["tags"] = toJson(n.tags)
   result["content"] = %n.content
   result["updatedAt"] = %n.updatedAt
 
@@ -52,8 +58,15 @@ proc toJson(h: SearchHit): JsonNode =
   result = newJObject()
   result["id"] = %h.id
   result["title"] = %h.title
+  result["tags"] = toJson(h.tags)
   result["updatedAt"] = %h.updatedAt
   result["snippet"] = %h.snippet
+
+proc parseTags(node: JsonNode): seq[string] =
+  if node.kind == JArray:
+    for t in node.getElems():
+      if t.kind == JString and t.getStr().len > 0:
+        result.add t.getStr()
 
 proc reply(w: Webview, id: cstring, node: JsonNode) =
   discard webview_return(w, id, 0, ($node).cstring)
@@ -90,7 +103,7 @@ proc cbSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
     let args = parseJson($req).getElems()
-    saveNote(args[0].getStr(), args[1].getStr(), args[2].getStr())
+    saveNote(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
@@ -221,7 +234,7 @@ proc cbTplSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
     let args = parseJson($req).getElems()
-    saveTemplate(args[0].getStr(), args[1].getStr(), args[2].getStr())
+    saveTemplate(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
