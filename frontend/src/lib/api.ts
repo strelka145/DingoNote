@@ -25,6 +25,7 @@ interface NoteApi {
   configGet(): Promise<{ vaultPath: string }>
   configSet(config: { vaultPath?: string }): Promise<{ vaultPath: string }>
   pickFolder(startPath?: string): Promise<string>
+  writeGitignore(): Promise<{ created: boolean; path: string }>
   saveAttachment(dataUrl: string): Promise<string>
 }
 
@@ -56,6 +57,7 @@ declare global {
       config: { vaultPath?: string },
     ) => Promise<{ vaultPath: string }>
     pickFolder?: (startPath?: string) => Promise<string>
+    writeGitignore?: () => Promise<{ created: boolean; path: string }>
     saveAttachment?: (dataUrl: string) => Promise<string>
   }
 }
@@ -87,6 +89,7 @@ function nimApi(): NoteApi {
     configGet: () => window.configGet!(),
     configSet: (c) => window.configSet!(c),
     pickFolder: (s) => window.pickFolder!(s ?? ''),
+    writeGitignore: () => window.writeGitignore!(),
     saveAttachment: (url) => window.saveAttachment!(url),
   }
 }
@@ -297,6 +300,9 @@ function localApi(): NoteApi {
     },
     async pickFolder() {
       return prompt('Vault path:') ?? ''
+    },
+    async writeGitignore() {
+      return { created: false, path: '' }
     },
     async saveAttachment(url) {
       return url

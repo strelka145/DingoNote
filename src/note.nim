@@ -322,6 +322,14 @@ proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbWriteGitignore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let (created, path) = writeGitignore()
+    reply(w, id, %* {"created": created, "path": path})
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbSaveAttachment(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -378,6 +386,7 @@ proc main() =
   discard webview_bind(w, "configGet", cbConfigGet, warg)
   discard webview_bind(w, "configSet", cbConfigSet, warg)
   discard webview_bind(w, "pickFolder", cbPickFolder, warg)
+  discard webview_bind(w, "writeGitignore", cbWriteGitignore, warg)
   discard webview_bind(w, "saveAttachment", cbSaveAttachment, warg)
 
   when defined(macosx):

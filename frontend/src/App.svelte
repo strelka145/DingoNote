@@ -253,6 +253,15 @@
     await refresh()
   }
 
+  let gitignoreStatus = $state('')
+  async function createGitignore() {
+    gitignoreStatus = ''
+    const { created } = await api.writeGitignore()
+    gitignoreStatus = created
+      ? '.gitignore created in the vault.'
+      : '.gitignore already exists — left untouched.'
+  }
+
   async function exportPDF() {
     if (!current || exporting) return
     await flushSave()
@@ -695,6 +704,22 @@
         </p>
       </div>
       <div class="setting-row">
+        <label>Version control</label>
+        <div class="setting-control">
+          <button class="setting-btn" onclick={createGitignore}>
+            Create .gitignore
+          </button>
+          {#if gitignoreStatus}
+            <span class="hint inline">{gitignoreStatus}</span>
+          {/if}
+        </div>
+        <p class="hint">
+          Drops a <code>.gitignore</code> in the vault for git users. Notes and
+          attachments stay tracked; OS junk and the
+          <code>.archive/</code> / <code>.templates/</code> folders are ignored.
+        </p>
+      </div>
+      <div class="setting-row">
         <label for="sort-pref">Sort order</label>
         <div class="setting-control">
           <select
@@ -859,6 +884,10 @@
     font-size: 12px;
     color: var(--text-dim);
     line-height: 1.5;
+  }
+  .hint.inline {
+    margin: 0;
+    align-self: center;
   }
   .hint code {
     background: var(--bg-elev);

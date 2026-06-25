@@ -41,6 +41,25 @@ proc setVaultPath*(path: string) =
   gConfig.vaultPath = path
   saveConfig(gConfig)
 
+const gitignoreTemplate = """# DingoNote vault
+.DS_Store
+
+# Soft-deleted notes and templates (not version-controlled)
+.archive/
+.templates/
+"""
+
+proc writeGitignore*(): tuple[created: bool, path: string] =
+  ## Write a sensible .gitignore into the vault folder for users who keep their
+  ## notes under version control. Notes and attachments stay tracked; OS junk,
+  ## backups, and the .archive/.templates folders are ignored. Does not clobber
+  ## an existing .gitignore — reports created = false in that case.
+  let path = dataDir() / ".gitignore"
+  if fileExists(path):
+    return (false, path)
+  writeFile(path, gitignoreTemplate)
+  result = (true, path)
+
 proc parseTitleAndBody(full: string): tuple[title, body: string] =
   let lines = full.splitLines
   var i = 0
