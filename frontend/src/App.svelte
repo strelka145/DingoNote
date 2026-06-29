@@ -7,6 +7,7 @@
     setWikilinkContext,
     setVaultPathProvider,
     commitAllSpreadsheets,
+    setSpreadsheetChangeListener,
   } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
@@ -21,6 +22,8 @@
   let current = $state<Note | null>(null)
   let saveTimer: number | null = null
   let dirty = $state(false)
+  let saveState = $state<'saved' | 'unsaved' | 'saving' | 'error'>('saved')
+  let saveError = $state('')
   let editorEl: HTMLDivElement | undefined = $state()
   let editor: Editor | null = null
   let inTable = $state(false)
@@ -383,6 +386,7 @@
     current = await scopeApi().load(id)
     loadedTitle = current?.title ?? null
     dirty = false
+    saveState = 'saved'
   }
 
   async function newNote() {
@@ -422,8 +426,23 @@
 
   function scheduleSave() {
     dirty = true
+    saveState = 'unsaved'
     if (saveTimer !== null) clearTimeout(saveTimer)
     saveTimer = window.setTimeout(flushSave, 500)
+  }
+
+  // Re-serialize the document and, if it changed, mark dirty + schedule a save.
+  // Called both from TipTap's onUpdate and explicitly from the spreadsheet
+  // commit listener — a setNodeAttribute flush from a spreadsheet edit doesn't
+  // reliably fire onUpdate, so without the explicit call a spreadsheet-only
+  // edit updates the doc but never triggers a save.
+  function syncFromEditor(ed: Editor) {
+    if (!current) return
+    const md = (ed.storage as any).markdown.getMarkdown() as string
+    if (md !== current.content) {
+      current.content = md
+      scheduleSave()
+    }
   }
 
   async function flushSave() {
@@ -441,7 +460,16 @@
     if (!current || !dirty) return
     const { id, title, tags, content } = current
     dirty = false
-    await scopeApi().save(id, title, tags ?? [], content)
+    saveState = 'saving'
+    saveError = ''
+    try {
+      await scopeApi().save(id, title, tags ?? [], content)
+      saveState = 'saved'
+    } catch (e) {
+      saveState = 'error'
+      saveError = e instanceof Error ? e.message : String(e)
+      dirty = true
+    }
     await refresh()
   }
 
@@ -497,16 +525,13 @@
           }
         },
       },
-      onUpdate: ({ editor }) => {
-        if (!current) return
-        const md = (editor.storage as any).markdown.getMarkdown() as string
-        if (md !== current.content) {
-          current.content = md
-          scheduleSave()
-        }
-      },
+      onUpdate: ({ editor }) => syncFromEditor(editor),
     })
     editor = e
+    // A spreadsheet cell edit flushes its data into the doc via setNodeAttribute,
+    // which doesn't reliably fire onUpdate — sync explicitly so the edit triggers
+    // a save on its own (not only when the body is later touched).
+    setSpreadsheetChangeListener(() => syncFromEditor(e))
     const syncTableState = () => {
       inTable = e.isActive('table')
     }
@@ -655,6 +680,18 @@
 
   <section class="editor">
     {#if current}
+      <div
+        class="save-status {saveState}"
+        title={saveState === 'error' ? saveError : ''}
+      >
+        {saveState === 'saved'
+          ? '✓ saved'
+          : saveState === 'saving'
+            ? '… saving'
+            : saveState === 'error'
+              ? '⚠ ' + saveError
+              : '● unsaved'}
+      </div>
       <input
         class="title-input"
         placeholder="Title"
@@ -1191,6 +1228,20 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .save-status {
+    font-size: 11px;
+    padding: 2px 32px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .save-status.unsaved {
+    color: #d08a3e;
+  }
+  .save-status.error {
+    color: var(--danger, #e5534b);
+    font-weight: 600;
   }
 
   .title-input {

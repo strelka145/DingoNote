@@ -81,6 +81,15 @@ export function commitAllSpreadsheets() {
   }
 }
 
+// The app registers a callback here so a spreadsheet flush can signal a content
+// change (re-serialize + schedule save). A setNodeAttribute transaction doesn't
+// reliably trigger TipTap's onUpdate, so onUpdate alone misses spreadsheet edits.
+let spreadsheetChangeListener: (() => void) | null = null
+
+export function setSpreadsheetChangeListener(fn: (() => void) | null) {
+  spreadsheetChangeListener = fn
+}
+
 const Spreadsheet = TiptapNode.create({
   name: 'spreadsheet',
   group: 'block',
@@ -175,7 +184,15 @@ const Spreadsheet = TiptapNode.create({
         let tr = editor.state.tr
         let changed = false
         if (JSON.stringify(current.attrs.data) !== JSON.stringify(newData)) {
-          tr = tr.setNodeAttribute(pos, 'data', newData)
+          // Store a copy, not jspreadsheet's live array. Otherwise attrs.data
+          // and the grid's internal data become the same reference, the next
+          // edit mutates both in place, and this comparison can never see a
+          // difference again — silently dropping every subsequent edit.
+          tr = tr.setNodeAttribute(
+            pos,
+            'data',
+            newData.map((r: string[]) => r.slice()),
+          )
           changed = true
         }
         if (
@@ -184,7 +201,12 @@ const Spreadsheet = TiptapNode.create({
           tr = tr.setNodeAttribute(pos, 'headers', newHeaders)
           changed = true
         }
-        if (changed) editor.view.dispatch(tr)
+        if (changed) {
+          editor.view.dispatch(tr)
+          // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
+          // the app explicitly to re-serialize and schedule a save.
+          spreadsheetChangeListener?.()
+        }
       }
 
       const schedule = () => {
@@ -221,6 +243,23 @@ const Spreadsheet = TiptapNode.create({
       }
       spreadsheetCommitters.add(commitNow)
 
+      // jspreadsheet's onchange/onafterchanges don't reliably fire on cell
+      // commit inside the webview, so committed edits never reach the document.
+      // Watch the rendered grid for DOM changes as an event-independent fallback
+      // and flush whenever a cell's content actually changes. flush() is a no-op
+      // when getData() matches the node attrs, so the echo from our own setData
+      // (and from selection/highlight churn) is harmless.
+      const gridObserver = new MutationObserver(() => schedule())
+      queueMicrotask(() => {
+        try {
+          gridObserver.observe(inner, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+          })
+        } catch {}
+      })
+
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
       const rows = Math.max(3, initialData.length || 3)
@@ -233,7 +272,11 @@ const Spreadsheet = TiptapNode.create({
       sheets = (jspreadsheet as any)(inner, {
         worksheets: [
           {
-            data: initialData,
+            // Pass a copy: jspreadsheet mutates its data array in place, and if
+            // it shared the node's attrs.data reference, flush's change check
+            // (getData() vs attrs.data) would always compare the array to
+            // itself and never detect an edit — so edits would never save.
+            data: initialData.map((r) => r.slice()),
             columns,
             minDimensions: [cols, rows],
             tableOverflow: false,
@@ -499,6 +542,9 @@ const Spreadsheet = TiptapNode.create({
         },
         destroy() {
           spreadsheetCommitters.delete(commitNow)
+          try {
+            gridObserver.disconnect()
+          } catch {}
           try {
             ;(jspreadsheet as any).destroy(inner, true)
           } catch {}
