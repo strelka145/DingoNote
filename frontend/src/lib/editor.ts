@@ -67,6 +67,20 @@ function escapeAttr(s: string) {
     .replace(/"/g, '&quot;')
 }
 
+// Each live spreadsheet NodeView registers a synchronous "commit" here. The app
+// calls commitAllSpreadsheets() right before saving so any pending cell edit is
+// pushed into the document first. Spreadsheet edits otherwise reach the doc via
+// an async microtask flush, which races with (and loses to) a note switch.
+const spreadsheetCommitters = new Set<() => void>()
+
+export function commitAllSpreadsheets() {
+  for (const commit of spreadsheetCommitters) {
+    try {
+      commit()
+    } catch {}
+  }
+}
+
 const Spreadsheet = TiptapNode.create({
   name: 'spreadsheet',
   group: 'block',
@@ -189,6 +203,23 @@ const Spreadsheet = TiptapNode.create({
         } catch {}
         schedule()
       }
+
+      // Synchronous variant for the app to call before saving. Unlike
+      // commitAndFlush (which defers the snapshot to a microtask), this pushes
+      // the data into the document immediately so a save reads the latest grid.
+      // When the user is actively editing a cell here, the open editor is left
+      // alone — committed cells still flush, and the live cell commits on blur.
+      const commitNow = () => {
+        const sheet = sheets[0]
+        if (!sheet) return
+        if (!wrapper.contains(document.activeElement)) {
+          try {
+            sheet.closeEditor?.(sheet.edition?.cell, true)
+          } catch {}
+        }
+        flush()
+      }
+      spreadsheetCommitters.add(commitNow)
 
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
@@ -467,6 +498,7 @@ const Spreadsheet = TiptapNode.create({
           return true
         },
         destroy() {
+          spreadsheetCommitters.delete(commitNow)
           try {
             ;(jspreadsheet as any).destroy(inner, true)
           } catch {}

@@ -6,6 +6,7 @@
     setTemplatesProvider,
     setWikilinkContext,
     setVaultPathProvider,
+    commitAllSpreadsheets,
   } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
@@ -426,14 +427,13 @@
   }
 
   async function flushSave() {
-    // Force any in-progress jspreadsheet cell editor to commit — but don't
-    // blur the main TipTap contenteditable, since flushSave runs on every
-    // debounced keystroke pause.
-    const active = document.activeElement as HTMLElement | null
-    if (active && active.closest('.spreadsheet-wrapper')) {
-      active.blur()
-      await Promise.resolve()
-    }
+    // Synchronously push any pending spreadsheet cell edits into the document
+    // before reading current.content. Spreadsheet edits reach the doc via an
+    // async microtask flush; on a note switch, focus has already left the grid
+    // (so the old activeElement-based blur check was skipped) and the save
+    // would read stale content and drop the edit. commitAllSpreadsheets fires
+    // onUpdate synchronously, so current.content + dirty are current here.
+    commitAllSpreadsheets()
     if (saveTimer !== null) {
       clearTimeout(saveTimer)
       saveTimer = null
