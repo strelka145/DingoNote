@@ -17,6 +17,7 @@ import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Fragment, Slice } from '@tiptap/pm/model'
 import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
@@ -1400,6 +1401,48 @@ const ImagePaste = Extension.create({
   },
 })
 
+// Pasting cells that carry a header type drops "title" cells into the body of
+// the target table, producing extra header rows / stray bold cells. This shows
+// up from Google Sheets (its frozen/header row exports as <th>) and from
+// copying between our own tables (ProseMirror keeps the tableHeader node type
+// in its internal clipboard slice, which bypasses any HTML-level transform).
+// Work at the slice level so both paths are covered: demote every pasted
+// tableHeader node to tableCell. Existing tables keep their own header row.
+const StripPastedTableHeaders = Extension.create({
+  name: 'stripPastedTableHeaders',
+  addProseMirrorPlugins() {
+    const demote = (fragment: Fragment, schema: any): Fragment => {
+      const cell = schema.nodes.tableCell
+      const header = schema.nodes.tableHeader
+      const out: any[] = []
+      fragment.forEach((node) => {
+        const content = demote(node.content, schema)
+        if (cell && header && node.type === header) {
+          out.push(cell.create(node.attrs, content, node.marks))
+        } else {
+          out.push(node.copy(content))
+        }
+      })
+      return Fragment.fromArray(out)
+    }
+    return [
+      new Plugin({
+        props: {
+          transformPasted: (slice, view) => {
+            const schema = view.state.schema
+            if (!schema.nodes.tableHeader) return slice
+            return new Slice(
+              demote(slice.content, schema),
+              slice.openStart,
+              slice.openEnd,
+            )
+          },
+        },
+      }),
+    ]
+  },
+})
+
 // Override the default ListItem so list items can contain any block
 // (code blocks, blockquotes, nested lists, multiple paragraphs, etc.)
 // instead of the StarterKit default `'paragraph block*'` which pins the
@@ -1420,4 +1463,5 @@ export const editorExtensions = [
   SlashCommands,
   WikiLinkSuggestion,
   ImagePaste,
+  StripPastedTableHeaders,
 ]
