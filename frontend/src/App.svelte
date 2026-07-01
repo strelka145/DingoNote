@@ -1524,6 +1524,10 @@
     cursor: col-resize;
   }
   .body :global(.spreadsheet-wrapper) {
+    /* Positioning context for the absolutely-placed column-title edit input;
+       without it the input resolves against a higher ancestor and jumps to
+       the top of the page. */
+    position: relative;
     margin: 8px 0;
     border-radius: 6px;
     overflow: hidden;
