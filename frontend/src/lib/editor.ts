@@ -24,7 +24,21 @@ import jspreadsheet from 'jspreadsheet-ce'
 
 type CellValue = string | number | boolean | null
 type GridData = CellValue[][]
-type SheetState = { data: GridData; headers: string[] }
+// `decimals[x]` = number of decimal places to DISPLAY for column x (a native
+// jspreadsheet column mask). null/absent = no formatting (show the raw value).
+// Display-only: the stored cell value / formula keeps full precision, so
+// downstream formulas are unaffected (unlike wrapping cells in ROUND()).
+type ColumnDecimals = (number | null)[]
+type SheetState = {
+  data: GridData
+  headers: string[]
+  decimals: ColumnDecimals
+}
+
+// jspreadsheet/jSuites numeric mask for n decimal places: 0 -> "0", 2 -> "0.00".
+function decimalsMask(n: number): string {
+  return n <= 0 ? '0' : '0.' + '0'.repeat(n)
+}
 
 const DEFAULT_GRID: GridData = [
   ['', '', ''],
@@ -49,15 +63,16 @@ function isDefaultColumnName(header: string, i: number): boolean {
 function parseGridJson(raw: string): SheetState {
   try {
     const obj = JSON.parse(raw)
-    if (Array.isArray(obj)) return { data: obj as GridData, headers: [] }
+    if (Array.isArray(obj)) return { data: obj as GridData, headers: [], decimals: [] }
     if (obj && Array.isArray(obj.data)) {
       return {
         data: obj.data as GridData,
         headers: Array.isArray(obj.headers) ? obj.headers : [],
+        decimals: Array.isArray(obj.decimals) ? obj.decimals : [],
       }
     }
   } catch {}
-  return { data: DEFAULT_GRID, headers: [] }
+  return { data: DEFAULT_GRID, headers: [], decimals: [] }
 }
 
 function escapeAttr(s: string) {
@@ -66,6 +81,18 @@ function escapeAttr(s: string) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+// Build the serialized `{data, headers?, decimals?}` object shared by the DOM
+// (data-content) and Markdown fence representations. Optional fields are only
+// emitted when they carry information, to keep saved notes clean.
+function buildSheetJson(node: any): Record<string, unknown> {
+  const out: Record<string, unknown> = { data: node.attrs.data ?? DEFAULT_GRID }
+  const headers = node.attrs.headers as string[] | undefined
+  if (headers && headers.some((h) => h && h.length > 0)) out.headers = headers
+  const decimals = node.attrs.decimals as ColumnDecimals | undefined
+  if (decimals && decimals.some((d) => d != null)) out.decimals = decimals
+  return out
 }
 
 // Each live spreadsheet NodeView registers a synchronous "commit" here. The app
@@ -108,6 +135,8 @@ const Spreadsheet = TiptapNode.create({
       parseGridJson(el.getAttribute('data-content') ?? '').data
     const readHeaders = (el: HTMLElement) =>
       parseGridJson(el.getAttribute('data-content') ?? '').headers
+    const readDecimals = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').decimals
     return {
       data: {
         default: DEFAULT_GRID,
@@ -119,6 +148,11 @@ const Spreadsheet = TiptapNode.create({
         parseHTML: readHeaders,
         renderHTML: () => ({}),
       },
+      decimals: {
+        default: [] as ColumnDecimals,
+        parseHTML: readDecimals,
+        renderHTML: () => ({}),
+      },
     }
   },
 
@@ -127,19 +161,11 @@ const Spreadsheet = TiptapNode.create({
   },
 
   renderHTML({ node, HTMLAttributes }) {
-    const out: { data: GridData; headers?: string[] } = {
-      data: node.attrs.data ?? DEFAULT_GRID,
-    }
-    const headers = node.attrs.headers as string[] | undefined
-    if (headers && headers.some((h) => h && h.length > 0)) {
-      out.headers = headers
-    }
-    const json = JSON.stringify(out)
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
         'data-spreadsheet': 'true',
-        'data-content': json,
+        'data-content': JSON.stringify(buildSheetJson(node)),
       }),
     ]
   },
@@ -263,11 +289,17 @@ const Spreadsheet = TiptapNode.create({
 
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
+      const initialDecimals = (node.attrs.decimals as ColumnDecimals) ?? []
       const rows = Math.max(3, initialData.length || 3)
       const cols = Math.max(3, initialData[0]?.length || 3, initialHeaders.length)
       const columns = Array.from({ length: cols }, (_, i) => ({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
+        // Display-only decimal formatting (see ColumnDecimals). The stored value
+        // stays raw, so dependent formulas use full precision.
+        ...(initialDecimals[i] != null
+          ? { mask: decimalsMask(initialDecimals[i] as number) }
+          : {}),
       }))
 
       sheets = (jspreadsheet as any)(inner, {
@@ -473,37 +505,41 @@ const Spreadsheet = TiptapNode.create({
       decimalLabel.textContent = 'Decimals'
       toolbar.append(decimalLabel)
 
-      // Match `=ROUND(<expr>, <digits>)` (no nested ROUNDs assumed). Group 1
-      // captures the inner expression so we can re-wrap or unwrap.
-      const ROUND_RE = /^\s*=\s*ROUND\(\s*(.*?)\s*,\s*-?\d+\s*\)\s*$/i
-
+      // Set a display-only decimal format on the column(s) spanned by the
+      // selection. Unlike wrapping cells in ROUND(), this is a native
+      // jspreadsheet column mask: the stored value/formula keeps full
+      // precision, so downstream formulas are unaffected. jspreadsheet-ce masks
+      // are per-column (there is no per-cell numeric format), so this applies
+      // to whole columns. `places === null` clears the format.
       const applyDecimals = (places: number | null) => {
         const s = sheet0()
-        if (!s || !lastSelection) return
-        const [x1, y1, x2, y2] = lastSelection
-        for (let y = y1; y <= y2; y++) {
-          for (let x = x1; x <= x2; x++) {
-            const raw = s.getValueFromCoords(x, y)
-            if (raw === '' || raw == null) continue
-            const rawStr = String(raw)
-            const isFormula = rawStr.trimStart().startsWith('=')
-
-            if (isFormula) {
-              // Preserve the formula by wrapping with ROUND (or unwrapping).
-              const m = rawStr.match(ROUND_RE)
-              const inner = m ? m[1] : rawStr.replace(/^\s*=\s*/, '')
-              const next =
-                places == null ? `=${inner}` : `=ROUND(${inner}, ${places})`
-              s.setValueFromCoords(x, y, next, true)
-            } else {
-              const num = Number(raw)
-              if (!Number.isFinite(num)) continue
-              const next = places == null ? String(num) : num.toFixed(places)
-              s.setValueFromCoords(x, y, next, false)
-            }
-          }
+        if (!s || !lastSelection || typeof getPos !== 'function') return
+        const pos = getPos()
+        if (pos == null) return
+        const target = editor.state.doc.nodeAt(pos)
+        if (!target) return
+        const [x1, , x2] = lastSelection
+        const next = ((target.attrs.decimals as ColumnDecimals) ?? []).slice()
+        if (!s.options.columns) s.options.columns = []
+        for (let x = x1; x <= x2; x++) {
+          next[x] = places
+          if (!s.options.columns[x]) s.options.columns[x] = {}
+          s.options.columns[x].mask =
+            places == null ? undefined : decimalsMask(places)
         }
-        schedule()
+        // Re-render so the new mask takes effect. getData(false) returns raw
+        // values/formulas, so nothing is rounded — only the display changes.
+        updating = true
+        try {
+          s.setData(s.getData(false))
+        } finally {
+          updating = false
+        }
+        // Persist the column format and trigger a save.
+        editor.view.dispatch(
+          editor.state.tr.setNodeAttribute(pos, 'decimals', next),
+        )
+        spreadsheetChangeListener?.()
       }
 
       const decimalGroup = document.createElement('div')
@@ -511,14 +547,14 @@ const Spreadsheet = TiptapNode.create({
       ;[0, 1, 2, 3, 4].forEach((n) => {
         const b = mkBtn(
           String(n),
-          `Round selection to ${n} decimal place${n === 1 ? '' : 's'}`,
+          `Show ${n} decimal place${n === 1 ? '' : 's'} in this column (display only)`,
           () => applyDecimals(n),
         )
         b.classList.add('spreadsheet-decimal-btn')
         decimalGroup.append(b)
       })
       decimalGroup.append(
-        mkBtn('×', 'Clear decimal formatting', () => applyDecimals(null)),
+        mkBtn('×', 'Clear column decimal formatting', () => applyDecimals(null)),
       )
       toolbar.append(decimalGroup)
 
@@ -560,20 +596,13 @@ const Spreadsheet = TiptapNode.create({
     return {
       markdown: {
         serialize(state: any, node: any) {
-          const out: { data: GridData; headers?: string[] } = {
-            data: node.attrs.data ?? DEFAULT_GRID,
-          }
-          const headers = node.attrs.headers as string[] | undefined
-          if (headers && headers.some((h) => h && h.length > 0)) {
-            out.headers = headers
-          }
           // Keep the JSON on a single line. prosemirror-markdown's
           // state.write() only prefixes the *start* of a write with the block
           // delimiter (e.g. list indentation); embedded newlines bypass it, so
           // multi-line JSON breaks the fence when the spreadsheet is nested in
           // a list and corrupts the note on the next save/load round-trip.
           state.write('```spreadsheet\n')
-          state.write(JSON.stringify(out))
+          state.write(JSON.stringify(buildSheetJson(node)))
           state.ensureNewLine()
           state.write('```')
           state.closeBlock(node)
@@ -1411,31 +1440,62 @@ const ImagePaste = Extension.create({
 const StripPastedTableHeaders = Extension.create({
   name: 'stripPastedTableHeaders',
   addProseMirrorPlugins() {
-    const demote = (fragment: Fragment, schema: any): Fragment => {
+    const mapFrag = (frag: Fragment, fn: (n: any) => any): Fragment => {
+      const out: any[] = []
+      frag.forEach((n) => out.push(fn(n)))
+      return Fragment.fromArray(out)
+    }
+    // Re-type every cell in a row (tableHeader <-> tableCell), keeping content.
+    const retypeRow = (row: any, type: any): any =>
+      row.copy(mapFrag(row.content, (c) => type.create(c.attrs, c.content, c.marks)))
+
+    // Body target: pasted cells fill body positions, so demote all header
+    // cells — otherwise they render as stray extra "title" rows/cells.
+    const demoteAll = (frag: Fragment, schema: any): Fragment => {
       const cell = schema.nodes.tableCell
       const header = schema.nodes.tableHeader
-      const out: any[] = []
-      fragment.forEach((node) => {
-        const content = demote(node.content, schema)
-        if (cell && header && node.type === header) {
-          out.push(cell.create(node.attrs, content, node.marks))
-        } else {
-          out.push(node.copy(content))
+      return mapFrag(frag, (n) =>
+        n.type === header
+          ? cell.create(n.attrs, demoteAll(n.content, schema), n.marks)
+          : n.copy(demoteAll(n.content, schema)),
+      )
+    }
+    // Top-level / header target: make each pasted table (or loose row run) have
+    // exactly one header row = its first row, the rest body.
+    const firstRowHeader = (frag: Fragment, schema: any): Fragment => {
+      const header = schema.nodes.tableHeader
+      const cell = schema.nodes.tableCell
+      let rowIdx = 0
+      return mapFrag(frag, (n) => {
+        if (n.type.name === 'table') {
+          let i = 0
+          return n.copy(mapFrag(n.content, (row) => retypeRow(row, i++ === 0 ? header : cell)))
         }
+        if (n.type.name === 'tableRow') {
+          return retypeRow(n, rowIdx++ === 0 ? header : cell)
+        }
+        return n
       })
-      return Fragment.fromArray(out)
     }
     return [
       new Plugin({
         props: {
           transformPasted: (slice, view) => {
             const schema = view.state.schema
-            if (!schema.nodes.tableHeader) return slice
-            return new Slice(
-              demote(slice.content, schema),
-              slice.openStart,
-              slice.openEnd,
-            )
+            if (!schema.nodes.tableHeader || !schema.nodes.tableCell) return slice
+            // Where is the caret? Inside a body cell -> demote; inside a header
+            // cell or outside any table -> first row becomes the header.
+            const $from = view.state.selection.$from
+            let inBodyCell = false
+            for (let d = $from.depth; d > 0; d--) {
+              const name = $from.node(d).type.name
+              if (name === 'tableCell') { inBodyCell = true; break }
+              if (name === 'tableHeader') break
+            }
+            const content = inBodyCell
+              ? demoteAll(slice.content, schema)
+              : firstRowHeader(slice.content, schema)
+            return new Slice(content, slice.openStart, slice.openEnd)
           },
         },
       }),
