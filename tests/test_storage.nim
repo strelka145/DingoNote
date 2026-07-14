@@ -155,6 +155,28 @@ suite "extractSnippet UTF-8 (bug 9-3: byte slicing must not cut a char)":
     check snip.len > 0
     check validateUtf8(snip) == -1  # -1 == the whole string is valid UTF-8
 
+suite "parseNote round-trip (bug 9-4: empty title must not swallow the body)":
+  # KNOWN-FAILING reproductions (fix deferred — needs a format decision).
+  # When the title is empty, saveToDir writes the body verbatim; if that body
+  # starts with "# …" or a "#tag …" line, the next parseNote promotes it to the
+  # title/tags, moving body content into fields and breaking the round-trip.
+  test "title-less note whose body starts with a heading round-trips":
+    let id = $genOid()
+    let body = "# Not a title\nbody text"
+    saveNote(id, "", @[], body)
+    let n = loadNote(id).get
+    check n.title == ""
+    check n.content == body
+
+  test "title-less note whose body starts with a tag line round-trips":
+    let id = $genOid()
+    let body = "#alpha #beta\nbody text"
+    saveNote(id, "", @[], body)
+    let n = loadNote(id).get
+    check n.title == ""
+    check n.tags.len == 0
+    check n.content == body
+
 # Clean up the temp vault.
 removeDir(testVault)
 echo "storage tests done"
