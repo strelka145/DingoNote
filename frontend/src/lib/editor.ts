@@ -40,6 +40,34 @@ function decimalsMask(n: number): string {
   return n <= 0 ? '0' : '0.' + '0'.repeat(n)
 }
 
+// Inverse of decimalsMask: read a column mask back to a decimal count, or null
+// if it is not one of our decimal masks. Used to re-derive `decimals` from
+// jspreadsheet's live columns after operations (insert/delete/move column) that
+// shift the columns — so the stored decimals never drift out of alignment.
+function maskToDecimals(mask: unknown): number | null {
+  if (mask === '0') return 0
+  if (typeof mask === 'string') {
+    const m = mask.match(/^0\.(0+)$/)
+    if (m) return m[1].length
+  }
+  return null
+}
+
+// A numeric mask garbles non-numeric cells (e.g. a text "Memo" cell renders as
+// "-2"), so a decimal format must only be applied to columns that hold numbers.
+// A column is safe to format when every non-empty cell is a number or a formula
+// (empty columns are safe too — there is no text to mangle).
+function columnHasText(data: GridData, x: number): boolean {
+  for (const row of data) {
+    const v = row?.[x]
+    if (v == null || v === '') continue
+    const s = String(v).trim()
+    if (s.startsWith('=')) continue
+    if (!Number.isFinite(Number(s))) return true
+  }
+  return false
+}
+
 const DEFAULT_GRID: GridData = [
   ['', '', ''],
   ['', '', ''],
@@ -296,8 +324,9 @@ const Spreadsheet = TiptapNode.create({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
         // Display-only decimal formatting (see ColumnDecimals). The stored value
-        // stays raw, so dependent formulas use full precision.
-        ...(initialDecimals[i] != null
+        // stays raw, so dependent formulas use full precision. Never mask a
+        // column that holds text — a numeric mask would garble it.
+        ...(initialDecimals[i] != null && !columnHasText(initialData, i)
           ? { mask: decimalsMask(initialDecimals[i] as number) }
           : {}),
       }))
@@ -518,10 +547,14 @@ const Spreadsheet = TiptapNode.create({
         if (pos == null) return
         const target = editor.state.doc.nodeAt(pos)
         if (!target) return
+        const data = s.getData(false) as GridData
+        const colCount = data[0]?.length ?? 0
         const [x1, , x2] = lastSelection
         const next = ((target.attrs.decimals as ColumnDecimals) ?? []).slice()
         if (!s.options.columns) s.options.columns = []
-        for (let x = x1; x <= x2; x++) {
+        for (let x = x1; x <= Math.min(x2, colCount - 1); x++) {
+          // Skip text columns: a numeric mask would garble their display.
+          if (places != null && columnHasText(data, x)) continue
           next[x] = places
           if (!s.options.columns[x]) s.options.columns[x] = {}
           s.options.columns[x].mask =
