@@ -256,6 +256,26 @@ const Spreadsheet = TiptapNode.create({
           tr = tr.setNodeAttribute(pos, 'headers', newHeaders)
           changed = true
         }
+        // Re-derive decimals from jspreadsheet's live column masks. jspreadsheet
+        // shifts options.columns with the grid on insert/delete/move column, so
+        // reading the masks back keeps `decimals` aligned to the data — a
+        // separately-maintained array would drift after a column operation.
+        const cols = (sheet.options?.columns as any[]) ?? []
+        const colCount = newData[0]?.length ?? 0
+        const newDecimals: ColumnDecimals = []
+        for (let x = 0; x < colCount; x++) {
+          newDecimals[x] = maskToDecimals(cols[x]?.mask)
+        }
+        while (newDecimals.length && newDecimals[newDecimals.length - 1] == null) {
+          newDecimals.pop()
+        }
+        if (
+          JSON.stringify(current.attrs.decimals ?? []) !==
+          JSON.stringify(newDecimals)
+        ) {
+          tr = tr.setNodeAttribute(pos, 'decimals', newDecimals)
+          changed = true
+        }
         if (changed) {
           editor.view.dispatch(tr)
           // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
@@ -542,20 +562,14 @@ const Spreadsheet = TiptapNode.create({
       // to whole columns. `places === null` clears the format.
       const applyDecimals = (places: number | null) => {
         const s = sheet0()
-        if (!s || !lastSelection || typeof getPos !== 'function') return
-        const pos = getPos()
-        if (pos == null) return
-        const target = editor.state.doc.nodeAt(pos)
-        if (!target) return
+        if (!s || !lastSelection) return
         const data = s.getData(false) as GridData
         const colCount = data[0]?.length ?? 0
         const [x1, , x2] = lastSelection
-        const next = ((target.attrs.decimals as ColumnDecimals) ?? []).slice()
         if (!s.options.columns) s.options.columns = []
         for (let x = x1; x <= Math.min(x2, colCount - 1); x++) {
           // Skip text columns: a numeric mask would garble their display.
           if (places != null && columnHasText(data, x)) continue
-          next[x] = places
           if (!s.options.columns[x]) s.options.columns[x] = {}
           s.options.columns[x].mask =
             places == null ? undefined : decimalsMask(places)
@@ -568,11 +582,9 @@ const Spreadsheet = TiptapNode.create({
         } finally {
           updating = false
         }
-        // Persist the column format and trigger a save.
-        editor.view.dispatch(
-          editor.state.tr.setNodeAttribute(pos, 'decimals', next),
-        )
-        spreadsheetChangeListener?.()
+        // flush() re-derives `decimals` from these column masks and triggers the
+        // save — keeping it the single source of truth for the format.
+        schedule()
       }
 
       const decimalGroup = document.createElement('div')
