@@ -8,6 +8,7 @@
 ## afterwards (by assigning gConfig directly, so nothing is persisted).
 
 import std/[unittest, os, options, strutils, times, oids, posix, sequtils]
+from std/unicode import validateUtf8
 
 include "../src/storage"
 
@@ -144,6 +145,15 @@ suite "searchIn snippet (bug 9-5: query must be stripped for the snippet)":
     # find() fails on the padded query and the snippet comes back empty.
     check hits[0].snippet.len > 0
     check "brown" in hits[0].snippet
+
+suite "extractSnippet UTF-8 (bug 9-3: byte slicing must not cut a char)":
+  test "snippet stays valid UTF-8 when radius lands mid multibyte char":
+    # 21×"あ" (63 bytes) + "X" (1) shifts alignment so idx-radius (64-60=4)
+    # falls inside the 2nd "あ" (bytes 3..5) — a byte-index slice would cut it.
+    let body = "あ".repeat(21) & "X" & "target" & "い".repeat(30)
+    let snip = extractSnippet(body, "target")
+    check snip.len > 0
+    check validateUtf8(snip) == -1  # -1 == the whole string is valid UTF-8
 
 # Clean up the temp vault.
 removeDir(testVault)
