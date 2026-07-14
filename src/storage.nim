@@ -209,7 +209,9 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
         if t.toLowerAscii().contains(q): tagMatch = true; break
       if not titleMatch and not bodyMatch and not tagMatch: continue
       snippet =
-        if bodyMatch: extractSnippet(body, query)
+        # Use the normalized query `q` (matching used it too); the raw `query`
+        # may carry surrounding whitespace that makes extractSnippet's find fail.
+        if bodyMatch: extractSnippet(body, q)
         elif titleMatch: title
         else: "#" & tags.join(" #")
 
