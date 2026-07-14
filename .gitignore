@@ -14,3 +14,5 @@ frontend/dist/
 # Editor
 .DS_Store
 .vscode/
+FIX_PLAN.md
+REFACTORING.md
