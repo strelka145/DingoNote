@@ -217,9 +217,13 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
       id: id, title: title, tags: tags,
       updatedAt: mtimeMs(path), snippet: snippet,
     )
-    if result.len >= limit: break
+  # Collect all matches, sort newest-first, THEN truncate. Applying the limit
+  # inside the walkDir loop (whose order is filesystem-dependent) would drop
+  # arbitrary — possibly the newest — notes before they could be ranked.
   result.sort do (a, b: SearchHit) -> int:
     cmp(b.updatedAt, a.updatedAt)
+  if result.len > limit:
+    result.setLen(limit)
 
 # ── Notes ───────────────────────────────────────────────────────────────────
 
