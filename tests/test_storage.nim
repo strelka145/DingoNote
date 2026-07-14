@@ -133,6 +133,18 @@ suite "searchIn limit (bug 1-1: newest must survive the limit)":
     let ids = hits.mapIt(it.id)
     check ids == @["note09", "note08", "note07"]
 
+suite "searchIn snippet (bug 9-5: query must be stripped for the snippet)":
+  test "a query with surrounding whitespace still yields a snippet":
+    let dir = testVault / ("snip_" & $genOid())
+    createDir(dir)
+    writeFile(dir / "n.md", "# title\n\nthe quick brown fox jumps")
+    let hits = searchIn(dir, "  brown  ")
+    check hits.len == 1
+    # Match uses the stripped query, so the snippet must too — otherwise
+    # find() fails on the padded query and the snippet comes back empty.
+    check hits[0].snippet.len > 0
+    check "brown" in hits[0].snippet
+
 # Clean up the temp vault.
 removeDir(testVault)
 echo "storage tests done"
