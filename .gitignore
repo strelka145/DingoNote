@@ -6,6 +6,8 @@ note
 note.exe
 *.dylib
 *.so
+# Compiled test binaries (tests/test_*.nim -> tests/test_*)
+tests/test_storage
 
 # Node / frontend
 frontend/node_modules/
