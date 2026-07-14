@@ -6,11 +6,13 @@
     setTemplatesProvider,
     setWikilinkContext,
     setVaultPathProvider,
+    commitAllSpreadsheets,
+    setSpreadsheetChangeListener,
   } from './lib/editor'
   import { api } from './lib/api'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
 
-  type Mode = 'notes' | 'templates'
+  type Mode = 'notes' | 'templates' | 'archive'
 
   let mode = $state<Mode>('notes')
   let notes = $state<SearchHit[]>([])
@@ -20,13 +22,55 @@
   let current = $state<Note | null>(null)
   let saveTimer: number | null = null
   let dirty = $state(false)
+  let saveState = $state<'saved' | 'unsaved' | 'saving' | 'error'>('saved')
+  let saveError = $state('')
   let editorEl: HTMLDivElement | undefined = $state()
   let editor: Editor | null = null
+  let inTable = $state(false)
   let pendingDeleteId = $state<string | null>(null)
   let pendingDeleteTimer: number | null = null
   let searchQuery = $state('')
   let searchInput: HTMLInputElement | undefined = $state()
   let searchTimer: number | null = null
+  let activeTag = $state<string | null>(null)
+  let tagDraft = $state('')
+
+  type SortKey = 'updated-desc' | 'updated-asc' | 'title-asc' | 'title-desc'
+  const SORT_KEYS: ReadonlyArray<SortKey> = [
+    'updated-desc',
+    'updated-asc',
+    'title-asc',
+    'title-desc',
+  ]
+  function loadSortPref(): SortKey {
+    const v = localStorage.getItem('notes-sort') as SortKey | null
+    return v && SORT_KEYS.includes(v) ? v : 'updated-desc'
+  }
+  let sortBy = $state<SortKey>(loadSortPref())
+  $effect(() => {
+    localStorage.setItem('notes-sort', sortBy)
+  })
+
+  const sortedNotes = $derived.by(() => {
+    let list = notes.slice()
+    if (activeTag) {
+      list = list.filter((n) => (n.tags ?? []).includes(activeTag!))
+    }
+    const t = (n: SearchHit) => (n.title || '').toLowerCase()
+    list.sort((a, b) => {
+      switch (sortBy) {
+        case 'updated-desc':
+          return b.updatedAt - a.updatedAt
+        case 'updated-asc':
+          return a.updatedAt - b.updatedAt
+        case 'title-asc':
+          return t(a).localeCompare(t(b))
+        case 'title-desc':
+          return t(b).localeCompare(t(a))
+      }
+    })
+    return list
+  })
 
   setTemplatesProvider(
     () => templates.map((t) => ({ id: t.id, title: t.title })),
@@ -48,23 +92,114 @@
   )
 
   function scopeApi() {
-    return mode === 'notes'
-      ? {
-          list: api.listNotes,
-          load: api.loadNote,
-          save: api.saveNote,
-          create: api.createNote,
-          del: api.deleteNote,
-          search: api.searchNotes,
-        }
-      : {
-          list: api.listTemplates,
-          load: api.loadTemplate,
-          save: api.saveTemplate,
-          create: api.createTemplate,
-          del: api.deleteTemplate,
-          search: api.searchTemplates,
-        }
+    if (mode === 'notes') {
+      return {
+        list: api.listNotes,
+        load: api.loadNote,
+        save: api.saveNote,
+        create: api.createNote,
+        del: api.deleteNote,
+        duplicate: api.duplicateNote,
+        search: api.searchNotes,
+      }
+    }
+    if (mode === 'templates') {
+      return {
+        list: api.listTemplates,
+        load: api.loadTemplate,
+        save: api.saveTemplate,
+        create: api.createTemplate,
+        del: api.deleteTemplate,
+        duplicate: api.duplicateTemplate,
+        search: api.searchTemplates,
+      }
+    }
+    // archive — purge as delete, no save/create/duplicate
+    return {
+      list: api.listArchive,
+      load: api.loadArchive,
+      save: async () => {},
+      create: async () => {
+        throw new Error('Cannot create in archive')
+      },
+      del: api.purgeArchive,
+      duplicate: async (_id: string) => {
+        throw new Error('Cannot duplicate in archive')
+      },
+      search: api.searchArchive,
+    }
+  }
+
+  async function duplicate(id: string, ev: Event) {
+    ev.stopPropagation()
+    clearPendingDelete()
+    await flushSave()
+    await commitWikilinkRename()
+    const meta = await scopeApi().duplicate(id)
+    await refresh()
+    current = await scopeApi().load(meta.id)
+    loadedTitle = current?.title ?? null
+    dirty = false
+  }
+
+  async function restoreFromArchive(id: string, ev: Event) {
+    ev.stopPropagation()
+    clearPendingDelete()
+    await api.restoreNote(id)
+    if (current?.id === id) current = null
+    await refresh()
+  }
+
+  // ── Wikilink rename cascade ────────────────────────────────────────────────
+  // Tracks the current note's title at load time so we can detect renames
+  // and rewrite `[[old]]` → `[[new]]` across the vault.
+  let loadedTitle: string | null = null
+
+  async function commitWikilinkRename() {
+    if (!current || loadedTitle === null) return
+    if (mode === 'archive') return // archived notes are frozen
+    const oldT = loadedTitle
+    const newT = current.title
+    if (!oldT || !newT || oldT === newT) {
+      loadedTitle = newT
+      return
+    }
+    try {
+      await api.renameWikilinks(oldT, newT)
+    } catch {}
+    loadedTitle = newT
+  }
+
+  function addTag(raw: string) {
+    if (!current) return
+    const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, '-')
+    if (!tag) return
+    const tags = current.tags ?? []
+    if (!tags.includes(tag)) {
+      current.tags = [...tags, tag]
+      scheduleSave()
+    }
+  }
+
+  function removeTag(tag: string) {
+    if (!current) return
+    current.tags = (current.tags ?? []).filter((t) => t !== tag)
+    scheduleSave()
+  }
+
+  function onTagKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+      e.preventDefault()
+      addTag(tagDraft)
+      tagDraft = ''
+    } else if (e.key === 'Backspace' && tagDraft === '') {
+      const tags = current?.tags ?? []
+      if (tags.length) removeTag(tags[tags.length - 1])
+    }
+  }
+
+  function filterByTag(tag: string) {
+    activeTag = activeTag === tag ? null : tag
   }
 
   async function refreshTemplates() {
@@ -85,9 +220,13 @@
   async function switchMode(next: Mode) {
     if (next === mode) return
     await flushSave()
+    await commitWikilinkRename()
+    loadedTitle = null
     mode = next
     current = null
     searchQuery = ''
+    activeTag = null
+    tagDraft = ''
     clearPendingDelete()
     await refresh()
   }
@@ -157,6 +296,15 @@
     await refresh()
   }
 
+  let gitignoreStatus = $state('')
+  async function createGitignore() {
+    gitignoreStatus = ''
+    const { created } = await api.writeGitignore()
+    gitignoreStatus = created
+      ? '.gitignore created in the vault.'
+      : '.gitignore already exists — left untouched.'
+  }
+
   async function exportPDF() {
     if (!current || exporting) return
     await flushSave()
@@ -167,9 +315,50 @@
 
     exporting = true
     document.body.classList.add('exporting')
-    // Let layout reflow before capture.
+    // Let layout reflow (body.exporting narrows #app to print width)
+    // before measurement / capture.
     await new Promise((r) => requestAnimationFrame(() => r(null)))
     await new Promise((r) => requestAnimationFrame(() => r(null)))
+
+    // Per-spreadsheet shrink: text reflows at the print column width
+    // naturally, but jspreadsheet tables don't reflow. For each wider
+    // sheet, apply `zoom` so only that sheet is scaled down, leaving
+    // text and other content at their natural print size.
+    const restoreFns: Array<() => void> = []
+    const editorBody = document.querySelector<HTMLElement>('.body')
+    if (editorBody) {
+      const cs = getComputedStyle(editorBody)
+      const innerWidth =
+        editorBody.clientWidth -
+        parseFloat(cs.paddingLeft || '0') -
+        parseFloat(cs.paddingRight || '0')
+      document
+        .querySelectorAll<HTMLElement>('.spreadsheet-wrapper')
+        .forEach((wrapper) => {
+          // Measure the actual rightmost edge of the spreadsheet's content,
+          // including anything that overflows the wrapper under
+          // `overflow: visible`. `scrollWidth` would miss this.
+          const wLeft = wrapper.getBoundingClientRect().left
+          let maxRight = wLeft
+          wrapper.querySelectorAll<HTMLElement>('*').forEach((el) => {
+            const r = el.getBoundingClientRect()
+            if (r.right > maxRight) maxRight = r.right
+          })
+          const sheetWidth = maxRight - wLeft
+          if (innerWidth > 0 && sheetWidth > innerWidth) {
+            const scale = innerWidth / sheetWidth
+            const prev = (wrapper.style as any).zoom ?? ''
+            ;(wrapper.style as any).zoom = String(scale)
+            restoreFns.push(() => {
+              ;(wrapper.style as any).zoom = prev
+            })
+          }
+        })
+    }
+    if (restoreFns.length) {
+      await new Promise((r) => requestAnimationFrame(() => r(null)))
+      await new Promise((r) => requestAnimationFrame(() => r(null)))
+    }
 
     const done = new Promise<string>((resolve) => {
       const handler = (ev: Event) => {
@@ -184,6 +373,7 @@
       await api.exportPDF(filename)
       await done
     } finally {
+      restoreFns.forEach((fn) => fn())
       document.body.classList.remove('exporting')
       exporting = false
     }
@@ -191,16 +381,21 @@
 
   async function select(id: string) {
     await flushSave()
+    await commitWikilinkRename()
     if (current?.id === id) return
     current = await scopeApi().load(id)
+    loadedTitle = current?.title ?? null
     dirty = false
+    saveState = 'saved'
   }
 
   async function newNote() {
     await flushSave()
+    await commitWikilinkRename()
     const meta = await scopeApi().create()
     await refresh()
     current = await scopeApi().load(meta.id)
+    loadedTitle = current?.title ?? null
     dirty = false
   }
 
@@ -231,27 +426,50 @@
 
   function scheduleSave() {
     dirty = true
+    saveState = 'unsaved'
     if (saveTimer !== null) clearTimeout(saveTimer)
     saveTimer = window.setTimeout(flushSave, 500)
   }
 
-  async function flushSave() {
-    // Force any in-progress jspreadsheet cell editor to commit — but don't
-    // blur the main TipTap contenteditable, since flushSave runs on every
-    // debounced keystroke pause.
-    const active = document.activeElement as HTMLElement | null
-    if (active && active.closest('.spreadsheet-wrapper')) {
-      active.blur()
-      await Promise.resolve()
+  // Re-serialize the document and, if it changed, mark dirty + schedule a save.
+  // Called both from TipTap's onUpdate and explicitly from the spreadsheet
+  // commit listener — a setNodeAttribute flush from a spreadsheet edit doesn't
+  // reliably fire onUpdate, so without the explicit call a spreadsheet-only
+  // edit updates the doc but never triggers a save.
+  function syncFromEditor(ed: Editor) {
+    if (!current) return
+    const md = (ed.storage as any).markdown.getMarkdown() as string
+    if (md !== current.content) {
+      current.content = md
+      scheduleSave()
     }
+  }
+
+  async function flushSave() {
+    // Synchronously push any pending spreadsheet cell edits into the document
+    // before reading current.content. Spreadsheet edits reach the doc via an
+    // async microtask flush; on a note switch, focus has already left the grid
+    // (so the old activeElement-based blur check was skipped) and the save
+    // would read stale content and drop the edit. commitAllSpreadsheets fires
+    // onUpdate synchronously, so current.content + dirty are current here.
+    commitAllSpreadsheets()
     if (saveTimer !== null) {
       clearTimeout(saveTimer)
       saveTimer = null
     }
     if (!current || !dirty) return
-    const { id, title, content } = current
+    const { id, title, tags, content } = current
     dirty = false
-    await scopeApi().save(id, title, content)
+    saveState = 'saving'
+    saveError = ''
+    try {
+      await scopeApi().save(id, title, tags ?? [], content)
+      saveState = 'saved'
+    } catch (e) {
+      saveState = 'error'
+      saveError = e instanceof Error ? e.message : String(e)
+      dirty = true
+    }
     await refresh()
   }
 
@@ -267,22 +485,65 @@
   $effect(() => {
     if (!editorEl) return
     const initialContent = untrack(() => current?.content ?? '')
+    const isReadOnly = untrack(() => mode === 'archive')
     const e = new Editor({
       element: editorEl,
       extensions: editorExtensions,
       content: initialContent,
       autofocus: false,
-      onUpdate: ({ editor }) => {
-        if (!current) return
-        const md = (editor.storage as any).markdown.getMarkdown() as string
-        if (md !== current.content) {
-          current.content = md
-          scheduleSave()
-        }
+      editable: !isReadOnly,
+      // Wider safety zone around the caret before ProseMirror's
+      // scrollIntoView fires — reduces oscillation when typing near
+      // the viewport edges.
+      editorProps: {
+        scrollMargin: 80,
+        scrollThreshold: 80,
+        // Excel / Google Sheets emit tables with only <td> (no <thead> or
+        // <th>), so TipTap treats every row as a data row and the table
+        // ends up headerless. Promote the first row's cells to <th> when
+        // none are present so pasted tables keep a sensible header.
+        transformPastedHTML(html) {
+          if (!html || !/<table\b/i.test(html)) return html
+          try {
+            const doc = new DOMParser().parseFromString(html, 'text/html')
+            doc.querySelectorAll('table').forEach((table) => {
+              if (table.querySelector('th')) return
+              const firstRow = table.querySelector('tr')
+              if (!firstRow) return
+              firstRow.querySelectorAll('td').forEach((td) => {
+                const th = doc.createElement('th')
+                th.innerHTML = td.innerHTML
+                for (const attr of Array.from(td.attributes)) {
+                  th.setAttribute(attr.name, attr.value)
+                }
+                td.replaceWith(th)
+              })
+            })
+            return doc.body.innerHTML
+          } catch {
+            return html
+          }
+        },
       },
+      onUpdate: ({ editor }) => syncFromEditor(editor),
     })
     editor = e
+    // A spreadsheet cell edit flushes its data into the doc via setNodeAttribute,
+    // which doesn't reliably fire onUpdate — sync explicitly so the edit triggers
+    // a save on its own (not only when the body is later touched).
+    setSpreadsheetChangeListener(() => syncFromEditor(e))
+    const syncTableState = () => {
+      inTable = e.isActive('table')
+    }
+    e.on('selectionUpdate', syncTableState)
+    e.on('transaction', syncTableState)
+    e.on('focus', syncTableState)
+    syncTableState()
     return () => {
+      e.off('selectionUpdate', syncTableState)
+      e.off('transaction', syncTableState)
+      e.off('focus', syncTableState)
+      inTable = false
       e.destroy()
       editor = null
     }
@@ -306,11 +567,17 @@
         <button
           class:active={mode === 'templates'}
           onclick={() => switchMode('templates')}>Templates</button>
+        <button
+          class:active={mode === 'archive'}
+          onclick={() => switchMode('archive')}
+          title="Archive — soft-deleted notes">🗑</button>
       </div>
-      <button
-        class="new"
-        onclick={newNote}
-        aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+      {#if mode !== 'archive'}
+        <button
+          class="new"
+          onclick={newNote}
+          aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+      {/if}
       <button
         class="settings-btn"
         onclick={openSettings}
@@ -331,8 +598,16 @@
         >
       {/if}
     </div>
+    {#if activeTag}
+      <div class="tag-filter">
+        Filtered by <span class="tag-label active">#{activeTag}</span>
+        <button class="tag-filter-clear" onclick={() => (activeTag = null)}
+          >×</button
+        >
+      </div>
+    {/if}
     <ul>
-      {#each notes as note (note.id)}
+      {#each sortedNotes as note (note.id)}
         <li>
           <button
             class="row"
@@ -353,12 +628,39 @@
             {:else}
               <div class="meta">{formatDate(note.updatedAt)}</div>
             {/if}
+            {#if note.tags?.length}
+              <div class="row-tags">
+                {#each note.tags as tag}
+                  <span class="row-tag" class:active={activeTag === tag}
+                    >#{tag}</span
+                  >
+                {/each}
+              </div>
+            {/if}
           </button>
+          {#if mode === 'archive'}
+            <button
+              class="restore"
+              onclick={(e) => restoreFromArchive(note.id, e)}
+              aria-label="Restore"
+              title="Restore to Notes">↺</button>
+          {:else}
+            <button
+              class="dup"
+              onclick={(e) => duplicate(note.id, e)}
+              aria-label="Duplicate"
+              title="Duplicate">⎘</button>
+          {/if}
           <button
             class="del"
             class:pending={pendingDeleteId === note.id}
             onclick={(e) => remove(note.id, e)}
-            aria-label={pendingDeleteId === note.id ? 'Confirm delete' : 'Delete'}
+            aria-label={pendingDeleteId === note.id
+              ? mode === 'archive' ? 'Confirm permanent delete' : 'Confirm delete'
+              : mode === 'archive' ? 'Delete forever' : 'Delete'}
+            title={mode === 'archive'
+              ? (pendingDeleteId === note.id ? 'Delete forever — click again to confirm' : 'Delete forever')
+              : (pendingDeleteId === note.id ? 'Click again to confirm' : 'Move to archive')}
           >{pendingDeleteId === note.id ? '✓' : '×'}</button>
         </li>
       {/each}
@@ -368,7 +670,9 @@
             ? 'No matches'
             : mode === 'notes'
               ? 'No notes yet'
-              : 'No templates yet'}
+              : mode === 'templates'
+                ? 'No templates yet'
+                : 'Archive is empty'}
         </li>
       {/if}
     </ul>
@@ -376,16 +680,95 @@
 
   <section class="editor">
     {#if current}
+      <div
+        class="save-status {saveState}"
+        title={saveState === 'error' ? saveError : ''}
+      >
+        {saveState === 'saved'
+          ? '✓ saved'
+          : saveState === 'saving'
+            ? '… saving'
+            : saveState === 'error'
+              ? '⚠ ' + saveError
+              : '● unsaved'}
+      </div>
       <input
         class="title-input"
         placeholder="Title"
         bind:value={current.title}
         oninput={scheduleSave}
       />
+      <div class="tags-bar">
+        {#each current.tags ?? [] as tag (tag)}
+          <span class="tag-chip">
+            <button
+              class="tag-label"
+              onclick={() => filterByTag(tag)}
+              class:active={activeTag === tag}
+              title="Filter by #{tag}">#{tag}</button
+            >
+            {#if mode !== 'archive'}
+              <button
+                class="tag-x"
+                onclick={() => removeTag(tag)}
+                aria-label="Remove tag #{tag}">×</button
+              >
+            {/if}
+          </span>
+        {/each}
+        {#if mode !== 'archive'}
+          <input
+            class="tag-input"
+            placeholder="add tag…"
+            bind:value={tagDraft}
+            onkeydown={onTagKeydown}
+            onblur={() => {
+              if (tagDraft.trim()) {
+                addTag(tagDraft)
+                tagDraft = ''
+              }
+            }}
+          />
+        {/if}
+      </div>
       {#key current.id}
         <div class="body" bind:this={editorEl}></div>
       {/key}
       <footer class="status">
+        {#if inTable}
+          <div class="table-controls" aria-label="Table actions">
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().addRowAfter().run()}
+              title="Add row below"
+            >+ Row</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().addColumnAfter().run()}
+              title="Add column to the right"
+            >+ Col</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteRow().run()}
+              title="Delete current row"
+            >− Row</button>
+            <button
+              class="table-btn"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteColumn().run()}
+              title="Delete current column"
+            >− Col</button>
+            <button
+              class="table-btn danger"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => editor?.chain().focus().deleteTable().run()}
+              title="Delete the table"
+            >×</button>
+          </div>
+        {/if}
         <button
           class="export-btn"
           onclick={exportPDF}
@@ -395,7 +778,15 @@
         >
           {exporting ? 'Exporting…' : 'Export PDF'}
         </button>
-        <span class="status-text">{dirty ? 'Saving…' : 'Saved'}</span>
+        <span class="status-text">
+          {#if mode === 'archive'}
+            Archived (read-only)
+          {:else if dirty}
+            Saving…
+          {:else}
+            Saved
+          {/if}
+        </span>
       </footer>
     {:else}
       <div class="empty">
@@ -436,6 +827,40 @@
         <p class="hint">
           Notes are stored as .md files in this folder. Templates live in a
           hidden <code>.templates/</code> subfolder.
+        </p>
+      </div>
+      <div class="setting-row">
+        <label>Version control</label>
+        <div class="setting-control">
+          <button class="setting-btn" onclick={createGitignore}>
+            Create .gitignore
+          </button>
+          {#if gitignoreStatus}
+            <span class="hint inline">{gitignoreStatus}</span>
+          {/if}
+        </div>
+        <p class="hint">
+          Drops a <code>.gitignore</code> in the vault for git users. Notes and
+          attachments stay tracked; OS junk and the
+          <code>.archive/</code> / <code>.templates/</code> folders are ignored.
+        </p>
+      </div>
+      <div class="setting-row">
+        <label for="sort-pref">Sort order</label>
+        <div class="setting-control">
+          <select
+            id="sort-pref"
+            class="sort-select"
+            bind:value={sortBy}
+          >
+            <option value="updated-desc">Updated · newest</option>
+            <option value="updated-asc">Updated · oldest</option>
+            <option value="title-asc">Title · A→Z</option>
+            <option value="title-desc">Title · Z→A</option>
+          </select>
+        </div>
+        <p class="hint">
+          How notes, templates, and archived items are ordered in the sidebar.
         </p>
       </div>
     </div>
@@ -586,6 +1011,10 @@
     color: var(--text-dim);
     line-height: 1.5;
   }
+  .hint.inline {
+    margin: 0;
+    align-self: center;
+  }
   .hint code {
     background: var(--bg-elev);
     padding: 1px 6px;
@@ -676,6 +1105,34 @@
     color: white;
   }
 
+  .restore,
+  .dup {
+    position: absolute;
+    right: 32px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1;
+    opacity: 0;
+    transition:
+      opacity 0.1s,
+      background 0.1s,
+      color 0.1s;
+  }
+  li:hover .restore,
+  li:hover .dup {
+    opacity: 1;
+  }
+  .restore:hover,
+  .dup:hover {
+    background: var(--accent);
+    color: white;
+  }
+
   .empty-list {
     text-align: center;
     color: var(--text-dim);
@@ -721,6 +1178,34 @@
     color: var(--text);
   }
 
+  .sort-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 6px 28px 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+      linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-size: 4px 4px, 4px 4px;
+    background-repeat: no-repeat;
+  }
+  .sort-select:hover {
+    background-color: var(--bg-hover);
+  }
+  .sort-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
   .snippet {
     font-size: 11px;
     color: var(--text-dim);
@@ -745,6 +1230,20 @@
     overflow: hidden;
   }
 
+  .save-status {
+    font-size: 11px;
+    padding: 2px 32px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .save-status.unsaved {
+    color: #d08a3e;
+  }
+  .save-status.error {
+    color: var(--danger, #e5534b);
+    font-weight: 600;
+  }
+
   .title-input {
     font-size: 22px;
     font-weight: 600;
@@ -755,9 +1254,97 @@
     color: var(--text-dim);
   }
 
+  /* ── Tags ─────────────────────────────────────────────────────────────── */
+  .tags-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 0 32px 8px;
+  }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .tag-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 2px 4px 2px 9px;
+    cursor: pointer;
+  }
+  .tag-label:hover {
+    color: var(--text);
+  }
+  .tag-label.active {
+    color: var(--accent, #4a9eff);
+    font-weight: 600;
+  }
+  .tag-x {
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-dim);
+    padding: 2px 7px 2px 2px;
+    cursor: pointer;
+  }
+  .tag-x:hover {
+    color: var(--danger, #e5534b);
+  }
+  .tag-input {
+    font-size: 12px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    padding: 2px 4px;
+    width: 90px;
+  }
+  .tag-input::placeholder {
+    color: var(--text-dim);
+  }
+  .row-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .row-tag {
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--bg-elev);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .row-tag.active {
+    color: var(--accent, #4a9eff);
+  }
+  .tag-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 4px 12px;
+    margin: 0 8px;
+  }
+  .tag-filter-clear {
+    margin-left: auto;
+    font-size: 14px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .tag-filter-clear:hover {
+    color: var(--text);
+  }
+
   .body {
     flex: 1;
     overflow-y: auto;
+    /* Reserve space for the scrollbar so its appearance doesn't reflow
+       the editor mid-typing and trigger the auto-scroll loop. */
+    scrollbar-gutter: stable;
     padding: 12px 40px 32px;
     background-image:
       linear-gradient(to right, var(--grid) 1px, transparent 1px),
@@ -937,6 +1524,10 @@
     cursor: col-resize;
   }
   .body :global(.spreadsheet-wrapper) {
+    /* Positioning context for the absolutely-placed column-title edit input;
+       without it the input resolves against a higher ancestor and jumps to
+       the top of the page. */
+    position: relative;
     margin: 8px 0;
     border-radius: 6px;
     overflow: hidden;
@@ -1022,6 +1613,30 @@
   .status-text {
     margin-left: auto;
   }
+  .table-controls {
+    display: flex;
+    gap: 4px;
+    margin-right: auto;
+  }
+  .table-btn {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .table-btn:hover {
+    background: var(--bg-hover);
+  }
+  .table-btn.danger:hover {
+    background: var(--danger);
+    color: white;
+    border-color: var(--danger);
+  }
+
   .export-btn {
     padding: 2px 10px;
     border-radius: 4px;

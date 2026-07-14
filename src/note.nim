@@ -1,28 +1,56 @@
-import std/[json, options, os, strutils]
+import std/[json, options, os]
 import webview
 import storage
 
-{.compile: "../vendor/macos_menu/menu.mm".}
-{.compile: "../vendor/macos_pdf/pdf.mm".}
-{.compile: "../vendor/macos_dialog/dialog.mm".}
-{.compile: "../vendor/macos_loader/loader.mm".}
-proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
-proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
-proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
-proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
+# ── Platform-specific native integration ─────────────────────────────────────
+# macOS uses Objective-C++ helpers for the system menu, NSOpenPanel folder
+# picker, NSPrintInfo-based PDF export, and the WKWebView sandbox-relaxing
+# loader. Other platforms ship stubs so the same Nim source builds.
+
+when defined(macosx):
+  {.compile: "../vendor/macos_menu/menu.mm".}
+  {.compile: "../vendor/macos_pdf/pdf.mm".}
+  {.compile: "../vendor/macos_dialog/dialog.mm".}
+  {.compile: "../vendor/macos_loader/loader.mm".}
+  proc note_setup_macos_menu(appName: cstring) {.importc, cdecl.}
+  proc note_load_with_access(w: Webview, htmlPath, accessRoot: cstring) {.importc, cdecl.}
+elif defined(linux):
+  {.compile: "../vendor/linux_pdf/pdf.cc".}
+  {.compile: "../vendor/linux_dialog/dialog.cc".}
+
+# Shared signatures — both macOS .mm and Linux .cc files export these
+# with C linkage, so a single Nim declaration covers both platforms.
+when defined(macosx) or defined(linux):
+  proc note_export_pdf(w: Webview, defaultName: cstring) {.importc, cdecl.}
+  proc note_pick_folder(w: Webview, cbId, startPath: cstring) {.importc, cdecl.}
+
+const platformName: string =
+  when defined(macosx): "macos"
+  elif defined(linux): "linux"
+  elif defined(windows): "windows"
+  else: "unknown"
+
+const hasNativePdfExport = defined(macosx) or defined(linux)
+const hasNativeFolderPicker = defined(macosx) or defined(linux)
 
 # ── JSON marshalling ──────────────────────────────────────────────────────────
+
+proc toJson(tags: seq[string]): JsonNode =
+  result = newJArray()
+  for t in tags: result.add %t
 
 proc toJson(m: NoteMeta): JsonNode =
   result = newJObject()
   result["id"] = %m.id
   result["title"] = %m.title
+  result["tags"] = toJson(m.tags)
   result["updatedAt"] = %m.updatedAt
 
 proc toJson(n: Note): JsonNode =
   result = newJObject()
   result["id"] = %n.id
   result["title"] = %n.title
+  result["tags"] = toJson(n.tags)
   result["content"] = %n.content
   result["updatedAt"] = %n.updatedAt
 
@@ -30,8 +58,15 @@ proc toJson(h: SearchHit): JsonNode =
   result = newJObject()
   result["id"] = %h.id
   result["title"] = %h.title
+  result["tags"] = toJson(h.tags)
   result["updatedAt"] = %h.updatedAt
   result["snippet"] = %h.snippet
+
+proc parseTags(node: JsonNode): seq[string] =
+  if node.kind == JArray:
+    for t in node.getElems():
+      if t.kind == JString and t.getStr().len > 0:
+        result.add t.getStr()
 
 proc reply(w: Webview, id: cstring, node: JsonNode) =
   discard webview_return(w, id, 0, ($node).cstring)
@@ -68,7 +103,7 @@ proc cbSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
     let args = parseJson($req).getElems()
-    saveNote(args[0].getStr(), args[1].getStr(), args[2].getStr())
+    saveNote(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
@@ -89,6 +124,23 @@ proc cbDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    reply(w, id, toJson(duplicateNote(args[0].getStr())))
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbRenameWikilinks(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let n = renameWikilinks(args[0].getStr(), args[1].getStr())
+    reply(w, id, %n)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -98,6 +150,59 @@ proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
     for h in searchNotes(query):
       arr.add toJson(h)
     reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+# ── Archive callbacks ────────────────────────────────────────────────────────
+
+proc cbArchiveList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let arr = newJArray()
+    for m in listArchive():
+      arr.add toJson(m)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbArchiveLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let n = loadArchive(args[0].getStr())
+    if n.isSome:
+      reply(w, id, toJson(n.get))
+    else:
+      reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbArchiveSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    let arr = newJArray()
+    for h in searchArchive(args[0].getStr()):
+      arr.add toJson(h)
+    reply(w, id, arr)
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbRestore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    restoreNote(args[0].getStr())
+    reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbPurge(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    purgeArchive(args[0].getStr())
+    reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
 
@@ -129,7 +234,7 @@ proc cbTplSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
     let args = parseJson($req).getElems()
-    saveTemplate(args[0].getStr(), args[1].getStr(), args[2].getStr())
+    saveTemplate(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
   except CatchableError as e:
     replyError(w, id, e.msg)
@@ -150,6 +255,14 @@ proc cbTplDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   except CatchableError as e:
     replyError(w, id, e.msg)
 
+proc cbTplDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let args = parseJson($req).getElems()
+    reply(w, id, toJson(duplicateTemplate(args[0].getStr())))
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
@@ -164,12 +277,15 @@ proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let args = parseJson($req).getElems()
-    let defaultName =
-      if args.len > 0 and args[0].kind == JString: args[0].getStr()
-      else: "note.pdf"
-    note_export_pdf(w, defaultName.cstring)
-    reply(w, id, newJNull())
+    when defined(macosx) or defined(linux):
+      let args = parseJson($req).getElems()
+      let defaultName =
+        if args.len > 0 and args[0].kind == JString: args[0].getStr()
+        else: "note.pdf"
+      note_export_pdf(w, defaultName.cstring)
+      reply(w, id, newJNull())
+    else:
+      replyError(w, id, "PDF export is not supported on this platform yet")
   except CatchableError as e:
     replyError(w, id, e.msg)
 
@@ -178,7 +294,14 @@ proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbConfigGet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let obj = %* {"vaultPath": getVaultPath()}
+    let obj = %* {
+      "vaultPath": getVaultPath(),
+      "platform": platformName,
+      "features": {
+        "pdfExport": hasNativePdfExport,
+        "nativeFolderPicker": hasNativeFolderPicker,
+      },
+    }
     reply(w, id, obj)
   except CatchableError as e:
     replyError(w, id, e.msg)
@@ -197,13 +320,26 @@ proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
 proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   try:
-    let args = parseJson($req).getElems()
-    let start =
-      if args.len > 0 and args[0].kind == JString: args[0].getStr()
-      else: getVaultPath()
-    # Native callback is responsible for calling webview_return — do NOT
-    # reply here, otherwise we'd resolve the promise twice.
-    note_pick_folder(w, id, start.cstring)
+    when defined(macosx) or defined(linux):
+      let args = parseJson($req).getElems()
+      let start =
+        if args.len > 0 and args[0].kind == JString: args[0].getStr()
+        else: getVaultPath()
+      # Native callback is responsible for calling webview_return — do NOT
+      # reply here, otherwise we'd resolve the promise twice.
+      note_pick_folder(w, id, start.cstring)
+    else:
+      # No native picker on this platform yet — resolve with null so the JS
+      # side can fall back to a text-input prompt.
+      reply(w, id, newJNull())
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
+proc cbWriteGitignore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  try:
+    let (created, path) = writeGitignore()
+    reply(w, id, %* {"created": created, "path": path})
   except CatchableError as e:
     replyError(w, id, e.msg)
 
@@ -230,11 +366,12 @@ proc resolveIndexHtml(): string =
   raise newException(IOError, "frontend/dist/index.html not found near " & exeDir)
 
 proc main() =
-  note_setup_macos_menu("Note")
+  when defined(macosx):
+    note_setup_macos_menu("DingoNote")
   let w = webview_create(1, nil)  # 1 = enable Web Inspector (right-click → Inspect Element)
   if w == nil:
     quit "webview_create failed"
-  discard webview_set_title(w, "Note")
+  discard webview_set_title(w, "DingoNote")
   discard webview_set_size(w, 1100, 720, hintNone)
 
   let warg = cast[pointer](w)
@@ -244,22 +381,35 @@ proc main() =
   discard webview_bind(w, "noteCreate", cbCreate, warg)
   discard webview_bind(w, "noteDelete", cbDelete, warg)
   discard webview_bind(w, "noteSearch", cbSearch, warg)
+  discard webview_bind(w, "noteDuplicate", cbDuplicate, warg)
+  discard webview_bind(w, "renameWikilinks", cbRenameWikilinks, warg)
+  discard webview_bind(w, "archiveList", cbArchiveList, warg)
+  discard webview_bind(w, "archiveLoad", cbArchiveLoad, warg)
+  discard webview_bind(w, "archiveSearch", cbArchiveSearch, warg)
+  discard webview_bind(w, "archiveRestore", cbRestore, warg)
+  discard webview_bind(w, "archivePurge", cbPurge, warg)
   discard webview_bind(w, "templateList", cbTplList, warg)
   discard webview_bind(w, "templateLoad", cbTplLoad, warg)
   discard webview_bind(w, "templateSave", cbTplSave, warg)
   discard webview_bind(w, "templateCreate", cbTplCreate, warg)
   discard webview_bind(w, "templateDelete", cbTplDelete, warg)
+  discard webview_bind(w, "templateDuplicate", cbTplDuplicate, warg)
   discard webview_bind(w, "templateSearch", cbTplSearch, warg)
   discard webview_bind(w, "exportPDF", cbExportPDF, warg)
   discard webview_bind(w, "configGet", cbConfigGet, warg)
   discard webview_bind(w, "configSet", cbConfigSet, warg)
   discard webview_bind(w, "pickFolder", cbPickFolder, warg)
+  discard webview_bind(w, "writeGitignore", cbWriteGitignore, warg)
   discard webview_bind(w, "saveAttachment", cbSaveAttachment, warg)
 
-  # loadFileURL:allowingReadAccessToURL: grants the page read access to any
-  # file under `/`, so vault images (e.g. file:///Users/.../attachments/x.png)
-  # load correctly without CORS errors.
-  note_load_with_access(w, resolveIndexHtml().cstring, "/".cstring)
+  when defined(macosx):
+    # loadFileURL:allowingReadAccessToURL: grants the page read access to any
+    # file under `/`, so vault images (e.g. file:///Users/.../attachments/x.png)
+    # load correctly without CORS errors. WebKitGTK / WebView2 don't have the
+    # same sandboxing, so a plain navigate works for them.
+    note_load_with_access(w, resolveIndexHtml().cstring, "/".cstring)
+  else:
+    discard webview_navigate(w, ("file://" & resolveIndexHtml()).cstring)
 
   discard webview_run(w)
   discard webview_destroy(w)

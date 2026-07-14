@@ -5,18 +5,68 @@ import {
   mergeAttributes,
 } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import ListItem from '@tiptap/extension-list-item'
 import { TableKit } from '@tiptap/extension-table'
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
+import { common, createLowlight } from 'lowlight'
+import nim from 'highlight.js/lib/languages/nim'
+
+const lowlight = createLowlight(common)
+lowlight.register('nim', nim)
 import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Fragment, Slice } from '@tiptap/pm/model'
 import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
 
 type CellValue = string | number | boolean | null
 type GridData = CellValue[][]
-type SheetState = { data: GridData; headers: string[] }
+// `decimals[x]` = number of decimal places to DISPLAY for column x (a native
+// jspreadsheet column mask). null/absent = no formatting (show the raw value).
+// Display-only: the stored cell value / formula keeps full precision, so
+// downstream formulas are unaffected (unlike wrapping cells in ROUND()).
+type ColumnDecimals = (number | null)[]
+type SheetState = {
+  data: GridData
+  headers: string[]
+  decimals: ColumnDecimals
+}
+
+// jspreadsheet/jSuites numeric mask for n decimal places: 0 -> "0", 2 -> "0.00".
+function decimalsMask(n: number): string {
+  return n <= 0 ? '0' : '0.' + '0'.repeat(n)
+}
+
+// Inverse of decimalsMask: read a column mask back to a decimal count, or null
+// if it is not one of our decimal masks. Used to re-derive `decimals` from
+// jspreadsheet's live columns after operations (insert/delete/move column) that
+// shift the columns — so the stored decimals never drift out of alignment.
+function maskToDecimals(mask: unknown): number | null {
+  if (mask === '0') return 0
+  if (typeof mask === 'string') {
+    const m = mask.match(/^0\.(0+)$/)
+    if (m) return m[1].length
+  }
+  return null
+}
+
+// A numeric mask garbles non-numeric cells (e.g. a text "Memo" cell renders as
+// "-2"), so a decimal format must only be applied to columns that hold numbers.
+// A column is safe to format when every non-empty cell is a number or a formula
+// (empty columns are safe too — there is no text to mangle).
+function columnHasText(data: GridData, x: number): boolean {
+  for (const row of data) {
+    const v = row?.[x]
+    if (v == null || v === '') continue
+    const s = String(v).trim()
+    if (s.startsWith('=')) continue
+    if (!Number.isFinite(Number(s))) return true
+  }
+  return false
+}
 
 const DEFAULT_GRID: GridData = [
   ['', '', ''],
@@ -41,15 +91,16 @@ function isDefaultColumnName(header: string, i: number): boolean {
 function parseGridJson(raw: string): SheetState {
   try {
     const obj = JSON.parse(raw)
-    if (Array.isArray(obj)) return { data: obj as GridData, headers: [] }
+    if (Array.isArray(obj)) return { data: obj as GridData, headers: [], decimals: [] }
     if (obj && Array.isArray(obj.data)) {
       return {
         data: obj.data as GridData,
         headers: Array.isArray(obj.headers) ? obj.headers : [],
+        decimals: Array.isArray(obj.decimals) ? obj.decimals : [],
       }
     }
   } catch {}
-  return { data: DEFAULT_GRID, headers: [] }
+  return { data: DEFAULT_GRID, headers: [], decimals: [] }
 }
 
 function escapeAttr(s: string) {
@@ -60,6 +111,41 @@ function escapeAttr(s: string) {
     .replace(/"/g, '&quot;')
 }
 
+// Build the serialized `{data, headers?, decimals?}` object shared by the DOM
+// (data-content) and Markdown fence representations. Optional fields are only
+// emitted when they carry information, to keep saved notes clean.
+function buildSheetJson(node: any): Record<string, unknown> {
+  const out: Record<string, unknown> = { data: node.attrs.data ?? DEFAULT_GRID }
+  const headers = node.attrs.headers as string[] | undefined
+  if (headers && headers.some((h) => h && h.length > 0)) out.headers = headers
+  const decimals = node.attrs.decimals as ColumnDecimals | undefined
+  if (decimals && decimals.some((d) => d != null)) out.decimals = decimals
+  return out
+}
+
+// Each live spreadsheet NodeView registers a synchronous "commit" here. The app
+// calls commitAllSpreadsheets() right before saving so any pending cell edit is
+// pushed into the document first. Spreadsheet edits otherwise reach the doc via
+// an async microtask flush, which races with (and loses to) a note switch.
+const spreadsheetCommitters = new Set<() => void>()
+
+export function commitAllSpreadsheets() {
+  for (const commit of spreadsheetCommitters) {
+    try {
+      commit()
+    } catch {}
+  }
+}
+
+// The app registers a callback here so a spreadsheet flush can signal a content
+// change (re-serialize + schedule save). A setNodeAttribute transaction doesn't
+// reliably trigger TipTap's onUpdate, so onUpdate alone misses spreadsheet edits.
+let spreadsheetChangeListener: (() => void) | null = null
+
+export function setSpreadsheetChangeListener(fn: (() => void) | null) {
+  spreadsheetChangeListener = fn
+}
+
 const Spreadsheet = TiptapNode.create({
   name: 'spreadsheet',
   group: 'block',
@@ -68,41 +154,46 @@ const Spreadsheet = TiptapNode.create({
   isolating: true,
 
   addAttributes() {
+    // The actual values live inside `data-content` as JSON; the per-attribute
+    // parsers below read from there. `renderHTML: () => ({})` suppresses
+    // TipTap's default behaviour of stringifying the attr onto the DOM,
+    // which would otherwise corrupt the 2-D array into
+    // `data="a,b,c,d"` via `Array.prototype.toString()` and break copy-paste.
+    const readData = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').data
+    const readHeaders = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').headers
+    const readDecimals = (el: HTMLElement) =>
+      parseGridJson(el.getAttribute('data-content') ?? '').decimals
     return {
-      data: { default: DEFAULT_GRID },
-      headers: { default: [] as string[] },
+      data: {
+        default: DEFAULT_GRID,
+        parseHTML: readData,
+        renderHTML: () => ({}),
+      },
+      headers: {
+        default: [] as string[],
+        parseHTML: readHeaders,
+        renderHTML: () => ({}),
+      },
+      decimals: {
+        default: [] as ColumnDecimals,
+        parseHTML: readDecimals,
+        renderHTML: () => ({}),
+      },
     }
   },
 
   parseHTML() {
-    return [
-      {
-        tag: 'div[data-spreadsheet]',
-        getAttrs: (el) => {
-          const e = el as HTMLElement
-          const { data, headers } = parseGridJson(
-            e.getAttribute('data-content') ?? '',
-          )
-          return { data, headers }
-        },
-      },
-    ]
+    return [{ tag: 'div[data-spreadsheet]' }]
   },
 
   renderHTML({ node, HTMLAttributes }) {
-    const out: { data: GridData; headers?: string[] } = {
-      data: node.attrs.data ?? DEFAULT_GRID,
-    }
-    const headers = node.attrs.headers as string[] | undefined
-    if (headers && headers.some((h) => h && h.length > 0)) {
-      out.headers = headers
-    }
-    const json = JSON.stringify(out)
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
         'data-spreadsheet': 'true',
-        'data-content': json,
+        'data-content': JSON.stringify(buildSheetJson(node)),
       }),
     ]
   },
@@ -148,7 +239,15 @@ const Spreadsheet = TiptapNode.create({
         let tr = editor.state.tr
         let changed = false
         if (JSON.stringify(current.attrs.data) !== JSON.stringify(newData)) {
-          tr = tr.setNodeAttribute(pos, 'data', newData)
+          // Store a copy, not jspreadsheet's live array. Otherwise attrs.data
+          // and the grid's internal data become the same reference, the next
+          // edit mutates both in place, and this comparison can never see a
+          // difference again — silently dropping every subsequent edit.
+          tr = tr.setNodeAttribute(
+            pos,
+            'data',
+            newData.map((r: string[]) => r.slice()),
+          )
           changed = true
         }
         if (
@@ -157,7 +256,12 @@ const Spreadsheet = TiptapNode.create({
           tr = tr.setNodeAttribute(pos, 'headers', newHeaders)
           changed = true
         }
-        if (changed) editor.view.dispatch(tr)
+        if (changed) {
+          editor.view.dispatch(tr)
+          // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
+          // the app explicitly to re-serialize and schedule a save.
+          spreadsheetChangeListener?.()
+        }
       }
 
       const schedule = () => {
@@ -177,19 +281,64 @@ const Spreadsheet = TiptapNode.create({
         schedule()
       }
 
+      // Synchronous variant for the app to call before saving. Unlike
+      // commitAndFlush (which defers the snapshot to a microtask), this pushes
+      // the data into the document immediately so a save reads the latest grid.
+      // When the user is actively editing a cell here, the open editor is left
+      // alone — committed cells still flush, and the live cell commits on blur.
+      const commitNow = () => {
+        const sheet = sheets[0]
+        if (!sheet) return
+        if (!wrapper.contains(document.activeElement)) {
+          try {
+            sheet.closeEditor?.(sheet.edition?.cell, true)
+          } catch {}
+        }
+        flush()
+      }
+      spreadsheetCommitters.add(commitNow)
+
+      // jspreadsheet's onchange/onafterchanges don't reliably fire on cell
+      // commit inside the webview, so committed edits never reach the document.
+      // Watch the rendered grid for DOM changes as an event-independent fallback
+      // and flush whenever a cell's content actually changes. flush() is a no-op
+      // when getData() matches the node attrs, so the echo from our own setData
+      // (and from selection/highlight churn) is harmless.
+      const gridObserver = new MutationObserver(() => schedule())
+      queueMicrotask(() => {
+        try {
+          gridObserver.observe(inner, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+          })
+        } catch {}
+      })
+
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
+      const initialDecimals = (node.attrs.decimals as ColumnDecimals) ?? []
       const rows = Math.max(3, initialData.length || 3)
       const cols = Math.max(3, initialData[0]?.length || 3, initialHeaders.length)
       const columns = Array.from({ length: cols }, (_, i) => ({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
+        // Display-only decimal formatting (see ColumnDecimals). The stored value
+        // stays raw, so dependent formulas use full precision. Never mask a
+        // column that holds text — a numeric mask would garble it.
+        ...(initialDecimals[i] != null && !columnHasText(initialData, i)
+          ? { mask: decimalsMask(initialDecimals[i] as number) }
+          : {}),
       }))
 
       sheets = (jspreadsheet as any)(inner, {
         worksheets: [
           {
-            data: initialData,
+            // Pass a copy: jspreadsheet mutates its data array in place, and if
+            // it shared the node's attrs.data reference, flush's change check
+            // (getData() vs attrs.data) would always compare the array to
+            // itself and never detect an edit — so edits would never save.
+            data: initialData.map((r) => r.slice()),
             columns,
             minDimensions: [cols, rows],
             tableOverflow: false,
@@ -206,6 +355,23 @@ const Spreadsheet = TiptapNode.create({
         oninsertcolumn: schedule,
         ondeletecolumn: schedule,
         onblur: commitAndFlush,
+        // Put raw cell values (formulas) on the system clipboard instead of
+        // jspreadsheet's default computed/displayed values. Same-sheet paste
+        // already uses the internal buffer (formulas preserved), but cross-sheet
+        // paste goes through the clipboard — without this it would paste values
+        // only. Note: relative references are NOT re-adjusted on cross-sheet
+        // paste (clipboard text bypasses jspreadsheet's offset logic).
+        oncopy: (instance: any, range: number[]) => {
+          const [c1, r1, c2, r2] = range
+          const data = instance.options.data
+          const out: string[] = []
+          for (let r = r1; r <= r2; r++) {
+            const cells: string[] = []
+            for (let c = c1; c <= c2; c++) cells.push(data[r]?.[c] ?? '')
+            out.push(cells.join('\t'))
+          }
+          return out.join('\r\n')
+        },
         onselection: (_inst: any, x1: number, y1: number, x2: number, y2: number) => {
           lastSelection = [
             Math.min(x1, x2),
@@ -368,37 +534,45 @@ const Spreadsheet = TiptapNode.create({
       decimalLabel.textContent = 'Decimals'
       toolbar.append(decimalLabel)
 
-      // Match `=ROUND(<expr>, <digits>)` (no nested ROUNDs assumed). Group 1
-      // captures the inner expression so we can re-wrap or unwrap.
-      const ROUND_RE = /^\s*=\s*ROUND\(\s*(.*?)\s*,\s*-?\d+\s*\)\s*$/i
-
+      // Set a display-only decimal format on the column(s) spanned by the
+      // selection. Unlike wrapping cells in ROUND(), this is a native
+      // jspreadsheet column mask: the stored value/formula keeps full
+      // precision, so downstream formulas are unaffected. jspreadsheet-ce masks
+      // are per-column (there is no per-cell numeric format), so this applies
+      // to whole columns. `places === null` clears the format.
       const applyDecimals = (places: number | null) => {
         const s = sheet0()
-        if (!s || !lastSelection) return
-        const [x1, y1, x2, y2] = lastSelection
-        for (let y = y1; y <= y2; y++) {
-          for (let x = x1; x <= x2; x++) {
-            const raw = s.getValueFromCoords(x, y)
-            if (raw === '' || raw == null) continue
-            const rawStr = String(raw)
-            const isFormula = rawStr.trimStart().startsWith('=')
-
-            if (isFormula) {
-              // Preserve the formula by wrapping with ROUND (or unwrapping).
-              const m = rawStr.match(ROUND_RE)
-              const inner = m ? m[1] : rawStr.replace(/^\s*=\s*/, '')
-              const next =
-                places == null ? `=${inner}` : `=ROUND(${inner}, ${places})`
-              s.setValueFromCoords(x, y, next, true)
-            } else {
-              const num = Number(raw)
-              if (!Number.isFinite(num)) continue
-              const next = places == null ? String(num) : num.toFixed(places)
-              s.setValueFromCoords(x, y, next, false)
-            }
-          }
+        if (!s || !lastSelection || typeof getPos !== 'function') return
+        const pos = getPos()
+        if (pos == null) return
+        const target = editor.state.doc.nodeAt(pos)
+        if (!target) return
+        const data = s.getData(false) as GridData
+        const colCount = data[0]?.length ?? 0
+        const [x1, , x2] = lastSelection
+        const next = ((target.attrs.decimals as ColumnDecimals) ?? []).slice()
+        if (!s.options.columns) s.options.columns = []
+        for (let x = x1; x <= Math.min(x2, colCount - 1); x++) {
+          // Skip text columns: a numeric mask would garble their display.
+          if (places != null && columnHasText(data, x)) continue
+          next[x] = places
+          if (!s.options.columns[x]) s.options.columns[x] = {}
+          s.options.columns[x].mask =
+            places == null ? undefined : decimalsMask(places)
         }
-        schedule()
+        // Re-render so the new mask takes effect. getData(false) returns raw
+        // values/formulas, so nothing is rounded — only the display changes.
+        updating = true
+        try {
+          s.setData(s.getData(false))
+        } finally {
+          updating = false
+        }
+        // Persist the column format and trigger a save.
+        editor.view.dispatch(
+          editor.state.tr.setNodeAttribute(pos, 'decimals', next),
+        )
+        spreadsheetChangeListener?.()
       }
 
       const decimalGroup = document.createElement('div')
@@ -406,14 +580,14 @@ const Spreadsheet = TiptapNode.create({
       ;[0, 1, 2, 3, 4].forEach((n) => {
         const b = mkBtn(
           String(n),
-          `Round selection to ${n} decimal place${n === 1 ? '' : 's'}`,
+          `Show ${n} decimal place${n === 1 ? '' : 's'} in this column (display only)`,
           () => applyDecimals(n),
         )
         b.classList.add('spreadsheet-decimal-btn')
         decimalGroup.append(b)
       })
       decimalGroup.append(
-        mkBtn('×', 'Clear decimal formatting', () => applyDecimals(null)),
+        mkBtn('×', 'Clear column decimal formatting', () => applyDecimals(null)),
       )
       toolbar.append(decimalGroup)
 
@@ -437,6 +611,10 @@ const Spreadsheet = TiptapNode.create({
           return true
         },
         destroy() {
+          spreadsheetCommitters.delete(commitNow)
+          try {
+            gridObserver.disconnect()
+          } catch {}
           try {
             ;(jspreadsheet as any).destroy(inner, true)
           } catch {}
@@ -451,15 +629,13 @@ const Spreadsheet = TiptapNode.create({
     return {
       markdown: {
         serialize(state: any, node: any) {
-          const out: { data: GridData; headers?: string[] } = {
-            data: node.attrs.data ?? DEFAULT_GRID,
-          }
-          const headers = node.attrs.headers as string[] | undefined
-          if (headers && headers.some((h) => h && h.length > 0)) {
-            out.headers = headers
-          }
+          // Keep the JSON on a single line. prosemirror-markdown's
+          // state.write() only prefixes the *start* of a write with the block
+          // delimiter (e.g. list indentation); embedded newlines bypass it, so
+          // multi-line JSON breaks the fence when the spreadsheet is nested in
+          // a list and corrupts the note on the next save/load round-trip.
           state.write('```spreadsheet\n')
-          state.write(JSON.stringify(out, null, 2))
+          state.write(JSON.stringify(buildSheetJson(node)))
           state.ensureNewLine()
           state.write('```')
           state.closeBlock(node)
@@ -1231,15 +1407,31 @@ const ImagePaste = Extension.create({
       new Plugin({
         props: {
           handlePaste(_view, event) {
-            const items = event.clipboardData?.items
-            if (!items) return false
-            const imageItems = Array.from(items).filter((it) =>
-              it.type.startsWith('image/'),
+            const data = event.clipboardData
+            if (!data) return false
+            const items = Array.from(data.items)
+
+            // Excel / Google Sheets / browser copy bundles a rendered image
+            // preview alongside HTML and plain text. If structured content
+            // is present, defer to TipTap so the table / formatted text
+            // gets pasted instead of the image preview.
+            const hasStructuredText = items.some(
+              (it) =>
+                it.kind === 'string' &&
+                (it.type === 'text/html' || it.type === 'text/plain'),
             )
-            if (imageItems.length === 0) return false
-            for (const item of imageItems) {
-              const file = item.getAsFile()
-              if (!file) continue
+            if (hasStructuredText) return false
+
+            // Pure image paste (screenshot tool, image-only clipboard, etc.) —
+            // require kind=file to avoid grabbing in-line image previews.
+            const imageFiles = items
+              .filter(
+                (it) => it.kind === 'file' && it.type.startsWith('image/'),
+              )
+              .map((it) => it.getAsFile())
+              .filter((f): f is File => !!f)
+            if (imageFiles.length === 0) return false
+            for (const file of imageFiles) {
               persistImageFile(file).then((rel) => {
                 if (rel) insertImage(rel)
               })
@@ -1271,8 +1463,91 @@ const ImagePaste = Extension.create({
   },
 })
 
+// Pasting cells that carry a header type drops "title" cells into the body of
+// the target table, producing extra header rows / stray bold cells. This shows
+// up from Google Sheets (its frozen/header row exports as <th>) and from
+// copying between our own tables (ProseMirror keeps the tableHeader node type
+// in its internal clipboard slice, which bypasses any HTML-level transform).
+// Work at the slice level so both paths are covered: demote every pasted
+// tableHeader node to tableCell. Existing tables keep their own header row.
+const StripPastedTableHeaders = Extension.create({
+  name: 'stripPastedTableHeaders',
+  addProseMirrorPlugins() {
+    const mapFrag = (frag: Fragment, fn: (n: any) => any): Fragment => {
+      const out: any[] = []
+      frag.forEach((n) => out.push(fn(n)))
+      return Fragment.fromArray(out)
+    }
+    // Re-type every cell in a row (tableHeader <-> tableCell), keeping content.
+    const retypeRow = (row: any, type: any): any =>
+      row.copy(mapFrag(row.content, (c) => type.create(c.attrs, c.content, c.marks)))
+
+    // Body target: pasted cells fill body positions, so demote all header
+    // cells — otherwise they render as stray extra "title" rows/cells.
+    const demoteAll = (frag: Fragment, schema: any): Fragment => {
+      const cell = schema.nodes.tableCell
+      const header = schema.nodes.tableHeader
+      return mapFrag(frag, (n) =>
+        n.type === header
+          ? cell.create(n.attrs, demoteAll(n.content, schema), n.marks)
+          : n.copy(demoteAll(n.content, schema)),
+      )
+    }
+    // Top-level / header target: make each pasted table (or loose row run) have
+    // exactly one header row = its first row, the rest body.
+    const firstRowHeader = (frag: Fragment, schema: any): Fragment => {
+      const header = schema.nodes.tableHeader
+      const cell = schema.nodes.tableCell
+      let rowIdx = 0
+      return mapFrag(frag, (n) => {
+        if (n.type.name === 'table') {
+          let i = 0
+          return n.copy(mapFrag(n.content, (row) => retypeRow(row, i++ === 0 ? header : cell)))
+        }
+        if (n.type.name === 'tableRow') {
+          return retypeRow(n, rowIdx++ === 0 ? header : cell)
+        }
+        return n
+      })
+    }
+    return [
+      new Plugin({
+        props: {
+          transformPasted: (slice, view) => {
+            const schema = view.state.schema
+            if (!schema.nodes.tableHeader || !schema.nodes.tableCell) return slice
+            // Where is the caret? Inside a body cell -> demote; inside a header
+            // cell or outside any table -> first row becomes the header.
+            const $from = view.state.selection.$from
+            let inBodyCell = false
+            for (let d = $from.depth; d > 0; d--) {
+              const name = $from.node(d).type.name
+              if (name === 'tableCell') { inBodyCell = true; break }
+              if (name === 'tableHeader') break
+            }
+            const content = inBodyCell
+              ? demoteAll(slice.content, schema)
+              : firstRowHeader(slice.content, schema)
+            return new Slice(content, slice.openStart, slice.openEnd)
+          },
+        },
+      }),
+    ]
+  },
+})
+
+// Override the default ListItem so list items can contain any block
+// (code blocks, blockquotes, nested lists, multiple paragraphs, etc.)
+// instead of the StarterKit default `'paragraph block*'` which pins the
+// first child to a plain paragraph.
+const FlexibleListItem = ListItem.extend({
+  content: 'block+',
+})
+
 export const editorExtensions = [
-  StarterKit,
+  StarterKit.configure({ listItem: false, codeBlock: false }),
+  FlexibleListItem,
+  CodeBlockLowlight.configure({ lowlight, defaultLanguage: null }),
   TableKit.configure({ table: { resizable: true } }),
   ResizableImage,
   Spreadsheet,
@@ -1281,4 +1556,5 @@ export const editorExtensions = [
   SlashCommands,
   WikiLinkSuggestion,
   ImagePaste,
+  StripPastedTableHeaders,
 ]
