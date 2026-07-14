@@ -107,14 +107,22 @@ proc mtimeMs(path: string): int64 =
   (getLastModificationTime(path).toUnix * 1000) +
     int64(getLastModificationTime(path).nanosecond div 1_000_000)
 
+proc snapToCharStart(s: string, i: int): int =
+  ## Move a byte index back to the start of the UTF-8 character it lands in, so
+  ## slicing there never cuts a multibyte char (which would break the snippet's
+  ## UTF-8 — e.g. Japanese text with radius offsets that land mid-character).
+  result = i
+  while result > 0 and result < s.len and (s[result].uint8 and 0xC0'u8) == 0x80'u8:
+    dec result
+
 proc extractSnippet(body: string, query: string, radius = 60): string =
   if query.len == 0 or body.len == 0: return ""
   let lower = body.toLowerAscii()
   let needle = query.toLowerAscii()
   let idx = lower.find(needle)
   if idx < 0: return ""
-  let startI = max(0, idx - radius)
-  let endI = min(body.len, idx + needle.len + radius)
+  let startI = snapToCharStart(body, max(0, idx - radius))
+  let endI = snapToCharStart(body, min(body.len, idx + needle.len + radius))
   var s = body[startI ..< endI]
   s = s.replace("\n", " ").replace("\r", " ")
   s = s.strip()
