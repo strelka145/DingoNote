@@ -10,6 +10,7 @@
     setSpreadsheetChangeListener,
   } from './lib/editor'
   import { api } from './lib/api'
+  import { highlight } from './lib/highlight'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
 
   type Mode = 'notes' | 'templates' | 'archive'
@@ -243,25 +244,6 @@
     searchQuery = ''
     refresh()
     searchInput?.focus()
-  }
-
-  function highlight(text: string, q: string): Array<{ s: string; m: boolean }> {
-    if (!q || !text) return [{ s: text, m: false }]
-    const lower = text.toLowerCase()
-    const lq = q.toLowerCase()
-    const out: Array<{ s: string; m: boolean }> = []
-    let i = 0
-    while (i < text.length) {
-      const idx = lower.indexOf(lq, i)
-      if (idx < 0) {
-        out.push({ s: text.slice(i), m: false })
-        break
-      }
-      if (idx > i) out.push({ s: text.slice(i, idx), m: false })
-      out.push({ s: text.slice(idx, idx + q.length), m: true })
-      i = idx + q.length
-    }
-    return out
   }
 
   function onGlobalKeyDown(ev: KeyboardEvent) {

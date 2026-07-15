@@ -34,6 +34,7 @@ import {
   escapeAttr,
   buildSheetJson,
 } from './spreadsheet-model'
+import { matchWikilink, renderWikilink } from './wikilink'
 
 // Each live spreadsheet NodeView registers a synchronous "commit" here. The app
 // calls commitAllSpreadsheets() right before saving so any pending cell edit is
@@ -1015,33 +1016,18 @@ const WikiLink = TiptapNode.create({
               'emphasis',
               'wikilink',
               (state: any, silent: boolean) => {
-                if (state.src.charCodeAt(state.pos) !== 0x5b) return false
-                if (state.src.charCodeAt(state.pos + 1) !== 0x5b) return false
-                const close = state.src.indexOf(']]', state.pos + 2)
-                if (close < 0) return false
-                const title = state.src.slice(state.pos + 2, close)
-                // Empty or containing newline/[ rejected
-                if (
-                  title.length === 0 ||
-                  /[\[\n]/.test(title)
-                ) return false
+                const m = matchWikilink(state.src, state.pos)
+                if (!m) return false
                 if (!silent) {
                   const token = state.push('wikilink', '', 0)
-                  token.content = title
+                  token.content = m.title
                 }
-                state.pos = close + 2
+                state.pos = m.end
                 return true
               },
             )
-            md.renderer.rules.wikilink = (tokens: any[], idx: number) => {
-              const t = tokens[idx].content
-              const escaped = t
-                .replace(/&/g, '&amp;')
-                .replace(/"/g, '&quot;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-              return `<a data-wikilink="${escaped}" href="#">${escaped}</a>`
-            }
+            md.renderer.rules.wikilink = (tokens: any[], idx: number) =>
+              renderWikilink(tokens[idx].content)
           },
         },
       },
