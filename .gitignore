@@ -18,4 +18,5 @@ frontend/dist/
 .vscode/
 FIX_PLAN.md
 REFACTORING.md
-/.github
+# Local-only GitHub helper (keep CI workflows tracked)
+/.github/copilot-instructions.md
