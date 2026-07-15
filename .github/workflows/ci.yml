@@ -9,9 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: jiro4989/setup-nim-action@v2
-        with:
-          nim-version: "2.2.x"
+      # Install via the official choosenim script (fetches from nim-lang.org,
+      # no GitHub API — avoids the rate-limit failures of setup-nim actions).
+      - name: Install Nim
+        run: |
+          curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y
+          echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
       # Semantic compile check only. A full `nim cpp` link would need the
       # platform webview libraries (WebKit/Cocoa or webkit2gtk); `nim check`
       # catches Nim-level errors without them.
