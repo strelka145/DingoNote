@@ -3,6 +3,7 @@ import {
   decimalsMask,
   maskToDecimals,
   columnHasText,
+  trimTrailingEmptyRows,
   defaultColumnName,
   isDefaultColumnName,
   parseGridJson,
@@ -51,6 +52,38 @@ describe('columnHasText', () => {
     expect(columnHasText(grid, 2)).toBe(false))
   it('empty column -> false (nothing to garble)', () =>
     expect(columnHasText([['', ''], ['', '']], 1)).toBe(false))
+})
+
+describe('trimTrailingEmptyRows', () => {
+  it('drops a trailing all-empty row (the phantom row)', () => {
+    expect(
+      trimTrailingEmptyRows([
+        ['a', 'b'],
+        ['c', 'd'],
+        ['', ''],
+      ]),
+    ).toEqual([
+      ['a', 'b'],
+      ['c', 'd'],
+    ])
+  })
+  it('drops multiple trailing empties but keeps middle empties', () => {
+    expect(
+      trimTrailingEmptyRows([
+        ['a'],
+        [''],
+        ['b'],
+        [''],
+        [''],
+      ]),
+    ).toEqual([['a'], [''], ['b']])
+  })
+  it('treats null / whitespace-only cells as empty', () => {
+    expect(trimTrailingEmptyRows([['x'], [null, '  ']] as any)).toEqual([['x']])
+  })
+  it('an all-empty grid trims to []', () => {
+    expect(trimTrailingEmptyRows([['', ''], ['', '']])).toEqual([])
+  })
 })
 
 describe('defaultColumnName', () => {
