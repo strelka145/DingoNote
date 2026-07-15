@@ -91,7 +91,11 @@ proc parseNote(full: string): tuple[title: string, tags: seq[string], body: stri
   var i = 0
   while i < lines.len and lines[i].strip().len == 0:
     inc i
-  if i < lines.len and lines[i].startsWith("# "):
+  if i < lines.len and lines[i] == "#":
+    # A bare "#" is the empty-title marker saveToDir writes to keep a body that
+    # starts with "# …" or a #tag line out of the title/tags fields. Consume it.
+    inc i
+  elif i < lines.len and lines[i].startsWith("# "):
     result.title = lines[i][2..^1].strip()
     inc i
   if i < lines.len:
@@ -149,12 +153,26 @@ proc loadFromDir(dir, id: string): Option[Note] =
   let (title, tags, body) = parseNote(full)
   some(Note(id: id, title: title, tags: tags, content: body, updatedAt: mtimeMs(path)))
 
+proc bodyStartsAmbiguous(content: string): bool =
+  ## True if the body's first non-blank line would be re-parsed as a title
+  ## (`# …`) or a tag line (`#a #b`). Only meaningful when no title/tag header
+  ## is written — otherwise that content line migrates into a field on load.
+  for line in content.splitLines:
+    if line.strip().len == 0: continue
+    return line.startsWith("# ") or parseTagLine(line).len > 0
+  false
+
 proc saveToDir(dir, id, title: string, tags: seq[string], content: string) =
   let path = dir / (id & ".md")
   var head = ""
   if title.len > 0: head.add "# " & title & "\n"
   let tl = tagLine(tags)
   if tl.len > 0: head.add tl & "\n"
+  # With no title/tag header, disambiguate a body that itself starts with a
+  # "# …" or #tag line by writing a bare "#" empty-title marker (parseNote
+  # consumes it), so the body round-trips instead of losing its first line.
+  if head.len == 0 and bodyStartsAmbiguous(content):
+    head = "#\n"
   let body =
     if head.len > 0: head & "\n" & content
     else: content
