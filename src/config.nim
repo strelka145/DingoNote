@@ -3,7 +3,17 @@
 ##   Linux:   $XDG_CONFIG_HOME/DingoNote/config.json  (or ~/.config/DingoNote/)
 ##   Windows: %APPDATA%/DingoNote/config.json         (or ~/AppData/Roaming/)
 
-import std/[json, os]
+import std/[json, os, oids]
+
+proc atomicWrite*(path, content: string) =
+  ## Write `content` to `path` durably: write to a temp file in the same
+  ## directory, then rename it over the target. A rename is atomic on a single
+  ## filesystem, so a crash or power loss mid-write can't leave a truncated or
+  ## corrupt file — readers see either the old file or the fully-written new one.
+  ## (Lives in config.nim, the lowest-level module, so storage.nim can reuse it.)
+  let tmp = path.parentDir / ("." & path.extractFilename & "." & $genOid() & ".tmp")
+  writeFile(tmp, content)
+  moveFile(tmp, path)
 
 type
   Config* = object
@@ -42,4 +52,4 @@ proc loadConfig*(): Config =
 
 proc saveConfig*(c: Config) =
   let j = %* {"vaultPath": c.vaultPath}
-  writeFile(configPath(), $j)
+  atomicWrite(configPath(), $j)

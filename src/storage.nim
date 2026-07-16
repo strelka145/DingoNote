@@ -60,7 +60,7 @@ proc writeGitignore*(): tuple[created: bool, path: string] =
   let path = dataDir() / ".gitignore"
   if fileExists(path):
     return (false, path)
-  writeFile(path, gitignoreTemplate)
+  atomicWrite(path, gitignoreTemplate)
   result = (true, path)
 
 proc parseTagLine(line: string): seq[string] =
@@ -176,12 +176,12 @@ proc saveToDir(dir, id, title: string, tags: seq[string], content: string) =
   let body =
     if head.len > 0: head & "\n" & content
     else: content
-  writeFile(path, body)
+  atomicWrite(path, body)
 
 proc createInDir(dir: string): NoteMeta =
   let id = $genOid()
   let path = dir / (id & ".md")
-  writeFile(path, "")
+  atomicWrite(path, "")
   NoteMeta(id: id, title: "", updatedAt: mtimeMs(path))
 
 proc deleteInDir(dir, id: string) =
@@ -201,7 +201,7 @@ proc renameWikilinks*(oldTitle, newTitle: string): int =
       if kind != pcFile or not path.endsWith(".md"): continue
       let content = try: readFile(path) except CatchableError: continue
       if not content.contains(oldRef): continue
-      writeFile(path, content.replace(oldRef, newRef))
+      atomicWrite(path, content.replace(oldRef, newRef))
       inc result
 
 proc duplicateInDir(dir, srcId: string): NoteMeta =
@@ -330,5 +330,5 @@ proc saveAttachment*(dataUrl: string): string =
   let payload = dataUrl[(comma + 1) .. ^1]
   let data = base64.decode(payload)
   let filename = $genOid() & "." & ext
-  writeFile(attachmentsDir() / filename, data)
+  atomicWrite(attachmentsDir() / filename, data)
   result = "attachments/" & filename
