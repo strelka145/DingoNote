@@ -177,6 +177,26 @@ suite "parseNote round-trip (bug 9-4: empty title must not swallow the body)":
     check n.tags.len == 0
     check n.content == body
 
+suite "atomicWrite (bug 1-2: durable writes via temp + rename)":
+  test "writes the content and leaves no temp file behind":
+    let dir = testVault / ("aw_" & $genOid())
+    createDir(dir)
+    let p = dir / "f.txt"
+    atomicWrite(p, "hello")
+    check readFile(p) == "hello"
+    var others = 0
+    for kind, path in walkDir(dir):
+      if path != p: inc others
+    check others == 0  # the temp file was renamed away, not left behind
+
+  test "overwrites an existing file":
+    let dir = testVault / ("aw2_" & $genOid())
+    createDir(dir)
+    let p = dir / "f.txt"
+    atomicWrite(p, "old")
+    atomicWrite(p, "new")
+    check readFile(p) == "new"
+
 # Clean up the temp vault.
 removeDir(testVault)
 echo "storage tests done"
