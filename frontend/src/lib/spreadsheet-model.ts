@@ -54,6 +54,19 @@ export const DEFAULT_GRID: GridData = [
   ['', '', ''],
 ]
 
+function isEmptyRow(row: CellValue[]): boolean {
+  return row.every((c) => c == null || String(c).trim() === '')
+}
+
+// Drop trailing all-empty rows. jspreadsheet's minimum-rows padding otherwise
+// gets baked into the saved data (a phantom empty row that reappears on load).
+// Rows in the middle are kept; only trailing empties are removed.
+export function trimTrailingEmptyRows(data: GridData): GridData {
+  let end = data.length
+  while (end > 0 && isEmptyRow(data[end - 1])) end--
+  return data.slice(0, end)
+}
+
 export function defaultColumnName(i: number): string {
   let name = ''
   let n = i

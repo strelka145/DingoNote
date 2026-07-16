@@ -29,6 +29,7 @@ import {
   decimalsMask,
   maskToDecimals,
   columnHasText,
+  trimTrailingEmptyRows,
   isDefaultColumnName,
   parseGridJson,
   escapeAttr,
@@ -251,15 +252,20 @@ const Spreadsheet = TiptapNode.create({
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
       const initialDecimals = (node.attrs.decimals as ColumnDecimals) ?? []
-      const rows = Math.max(3, initialData.length || 3)
-      const cols = Math.max(3, initialData[0]?.length || 3, initialHeaders.length)
+      // Trim trailing empty rows so jspreadsheet's min-rows padding doesn't
+      // linger as a phantom row. An all-empty sheet falls back to DEFAULT_GRID
+      // so a freshly-inserted spreadsheet still opens with a usable 3×3 grid.
+      const trimmed = trimTrailingEmptyRows(initialData)
+      const gridData = trimmed.length ? trimmed : DEFAULT_GRID
+      const rows = gridData.length
+      const cols = Math.max(3, gridData[0]?.length || 3, initialHeaders.length)
       const columns = Array.from({ length: cols }, (_, i) => ({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
         // Display-only decimal formatting (see ColumnDecimals). The stored value
         // stays raw, so dependent formulas use full precision. Never mask a
         // column that holds text — a numeric mask would garble it.
-        ...(initialDecimals[i] != null && !columnHasText(initialData, i)
+        ...(initialDecimals[i] != null && !columnHasText(gridData, i)
           ? { mask: decimalsMask(initialDecimals[i] as number) }
           : {}),
       }))
@@ -271,7 +277,7 @@ const Spreadsheet = TiptapNode.create({
             // it shared the node's attrs.data reference, flush's change check
             // (getData() vs attrs.data) would always compare the array to
             // itself and never detect an edit — so edits would never save.
-            data: initialData.map((r) => r.slice()),
+            data: gridData.map((r) => r.slice()),
             columns,
             minDimensions: [cols, rows],
             tableOverflow: false,
