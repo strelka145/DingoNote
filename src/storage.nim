@@ -136,16 +136,6 @@ proc extractSnippet(body: string, query: string, radius = 60): string =
 
 # ── Generic helpers ─────────────────────────────────────────────────────────
 
-proc listIn(dir: string): seq[NoteMeta] =
-  for kind, path in walkDir(dir):
-    if kind != pcFile or not path.endsWith(".md"): continue
-    let id = path.splitFile.name
-    let full = try: readFile(path) except CatchableError: ""
-    let (title, tags, _) = parseNote(full)
-    result.add NoteMeta(id: id, title: title, tags: tags, updatedAt: mtimeMs(path))
-  result.sort do (a, b: NoteMeta) -> int:
-    cmp(b.updatedAt, a.updatedAt)
-
 proc loadFromDir(dir, id: string): Option[Note] =
   let path = dir / (id & ".md")
   if not fileExists(path): return none(Note)
@@ -252,6 +242,15 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
     cmp(b.updatedAt, a.updatedAt)
   if result.len > limit:
     result.setLen(limit)
+
+proc listIn(dir: string): seq[NoteMeta] =
+  ## The note list is just an empty-query search (already collected + sorted
+  ## newest-first); drop the empty snippet. `int.high` = no cap: the list must
+  ## show every note, not the search result limit.
+  for hit in searchIn(dir, "", int.high):
+    result.add NoteMeta(
+      id: hit.id, title: hit.title, tags: hit.tags, updatedAt: hit.updatedAt,
+    )
 
 # ── Notes ───────────────────────────────────────────────────────────────────
 
