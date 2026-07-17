@@ -197,6 +197,33 @@ suite "atomicWrite (bug 1-2: durable writes via temp + rename)":
     atomicWrite(p, "new")
     check readFile(p) == "new"
 
+suite "archive/restore collision (bug 1-3: don't silently overwrite)":
+  test "deleteNote backs up an existing archived note of the same id":
+    let id = $genOid()
+    createDir(archiveDir())
+    writeFile(archiveDir() / (id & ".md"), "# OLD\n\nprevious archived copy")
+    saveNote(id, "New", @[], "new body")
+    deleteNote(id)
+    # the active note is archived …
+    check loadArchive(id).get.title == "New"
+    # … and the previously-archived note survives as a .bak (not destroyed)
+    var baks = 0
+    for kind, path in walkDir(archiveDir()):
+      if (id & ".md.bak-") in path: inc baks
+    check baks == 1
+
+  test "restoreNote backs up an existing active note of the same id":
+    let id = $genOid()
+    createDir(archiveDir())
+    writeFile(archiveDir() / (id & ".md"), "# Archived\n\nrestore me")
+    saveNote(id, "Active", @[], "in the way")
+    restoreNote(id)
+    check loadNote(id).get.title == "Archived"
+    var baks = 0
+    for kind, path in walkDir(dataDir()):
+      if (id & ".md.bak-") in path: inc baks
+    check baks == 1
+
 # Clean up the temp vault.
 removeDir(testVault)
 echo "storage tests done"
