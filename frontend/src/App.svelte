@@ -134,7 +134,7 @@
   async function duplicate(id: string, ev: Event) {
     ev.stopPropagation()
     clearPendingDelete()
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     const meta = await scopeApi().duplicate(id)
     await refresh()
@@ -220,7 +220,7 @@
 
   async function switchMode(next: Mode) {
     if (next === mode) return
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     loadedTitle = null
     mode = next
@@ -272,7 +272,7 @@
   async function changeVault() {
     const path = await api.pickFolder(config.vaultPath)
     if (!path) return
-    await flushSave()
+    if (!(await flushSave())) return
     config = await api.configSet({ vaultPath: path })
     current = null
     await refresh()
@@ -289,7 +289,7 @@
 
   async function exportPDF() {
     if (!current || exporting) return
-    await flushSave()
+    if (!(await flushSave())) return
     const safeTitle = (current.title || 'untitled')
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim() || 'untitled'
@@ -362,7 +362,7 @@
   }
 
   async function select(id: string) {
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     if (current?.id === id) return
     current = await scopeApi().load(id)
@@ -372,7 +372,7 @@
   }
 
   async function newNote() {
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     const meta = await scopeApi().create()
     await refresh()
@@ -427,7 +427,9 @@
     }
   }
 
-  async function flushSave() {
+  // Returns true when it's safe to proceed (nothing to save, or the save
+  // succeeded); false when the save failed and the caller must not switch away.
+  async function flushSave(): Promise<boolean> {
     // Synchronously push any pending spreadsheet cell edits into the document
     // before reading current.content. Spreadsheet edits reach the doc via an
     // async microtask flush; on a note switch, focus has already left the grid
@@ -439,7 +441,7 @@
       clearTimeout(saveTimer)
       saveTimer = null
     }
-    if (!current || !dirty) return
+    if (!current || !dirty) return true
     const { id, title, tags, content } = current
     dirty = false
     saveState = 'saving'
@@ -448,11 +450,15 @@
       await scopeApi().save(id, title, tags ?? [], content)
       saveState = 'saved'
     } catch (e) {
+      // Keep the edit (dirty) and surface the error; callers must NOT proceed
+      // to switch notes, or the unsaved content would be silently discarded.
       saveState = 'error'
       saveError = e instanceof Error ? e.message : String(e)
       dirty = true
+      return false
     }
     await refresh()
+    return true
   }
 
   function formatDate(t: number) {
