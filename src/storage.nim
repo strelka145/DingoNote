@@ -189,7 +189,11 @@ proc renameWikilinks*(oldTitle, newTitle: string): int =
   for dir in [dataDir(), templatesDir()]:
     for kind, path in walkDir(dir):
       if kind != pcFile or not path.endsWith(".md"): continue
-      let content = try: readFile(path) except CatchableError: continue
+      let content =
+        try: readFile(path)
+        except CatchableError as e:
+          stderr.writeLine("dingonote: skipping unreadable note " & path & ": " & e.msg)
+          continue
       if not content.contains(oldRef): continue
       atomicWrite(path, content.replace(oldRef, newRef))
       inc result
@@ -212,7 +216,12 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
   let q = query.toLowerAscii().strip()
   for kind, path in walkDir(dir):
     if kind != pcFile or not path.endsWith(".md"): continue
-    let full = try: readFile(path) except CatchableError: ""
+    let full =
+      try: readFile(path)
+      except CatchableError as e:
+        # Skip this note in the results but keep searching the rest.
+        stderr.writeLine("dingonote: skipping unreadable note " & path & ": " & e.msg)
+        ""
     let id = path.splitFile.name
     let (title, tags, body) = parseNote(full)
 

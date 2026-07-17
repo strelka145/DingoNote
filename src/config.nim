@@ -48,7 +48,11 @@ proc loadConfig*(): Config =
     if j.hasKey("vaultPath"):
       let s = j["vaultPath"].getStr()
       if s.len > 0: result.vaultPath = expandTilde(s)
-  except CatchableError: discard
+  except CatchableError as e:
+    # Missing/corrupt config is non-fatal: fall back to defaults, but log so a
+    # real read/parse problem isn't invisible.
+    stderr.writeLine("dingonote: could not read config " & p & ": " & e.msg &
+      " (using defaults)")
 
 proc saveConfig*(c: Config) =
   let j = %* {"vaultPath": c.vaultPath}
