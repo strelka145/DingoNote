@@ -47,7 +47,9 @@ export function commitAllSpreadsheets() {
   for (const commit of spreadsheetCommitters) {
     try {
       commit()
-    } catch {}
+    } catch {
+      // One sheet failing to commit must not block the others or the save.
+    }
   }
 }
 
@@ -211,7 +213,9 @@ const Spreadsheet = TiptapNode.create({
         const sheet = sheets[0]
         try {
           sheet?.closeEditor?.(sheet.edition?.cell, true)
-        } catch {}
+        } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         schedule()
       }
 
@@ -226,7 +230,9 @@ const Spreadsheet = TiptapNode.create({
         if (!wrapper.contains(document.activeElement)) {
           try {
             sheet.closeEditor?.(sheet.edition?.cell, true)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         }
         flush()
       }
@@ -246,7 +252,9 @@ const Spreadsheet = TiptapNode.create({
             childList: true,
             characterData: true,
           })
-        } catch {}
+        } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
       })
 
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
@@ -355,7 +363,9 @@ const Spreadsheet = TiptapNode.create({
           const next = input.value.trim()
           try {
             sheet0()?.setHeader?.(colIndex, next || undefined)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
           schedule()
         }
         input.addEventListener('blur', () => finish(true))
@@ -545,10 +555,14 @@ const Spreadsheet = TiptapNode.create({
           spreadsheetCommitters.delete(commitNow)
           try {
             gridObserver.disconnect()
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
           try {
             ;(jspreadsheet as any).destroy(inner, true)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         },
         stopEvent: () => true,
         ignoreMutations: () => true,
@@ -656,7 +670,9 @@ async function persistImageFile(file: File): Promise<string | null> {
         const { api } = await import('./api')
         const rel = await api.saveAttachment(dataUrl)
         resolve(rel)
-      } catch {
+      } catch (e) {
+        // Attachment save failed — paste continues without the image.
+        console.warn('saveAttachment failed', e)
         resolve(null)
       }
     }

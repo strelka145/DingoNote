@@ -167,7 +167,11 @@
     }
     try {
       await api.renameWikilinks(oldT, newT)
-    } catch {}
+    } catch (e) {
+      // Non-fatal: the note itself was already saved; only the backlink rename
+      // failed. Surface it rather than swallowing silently.
+      console.warn('renameWikilinks failed', e)
+    }
     loadedTitle = newT
   }
 
@@ -522,6 +526,7 @@
             })
             return doc.body.innerHTML
           } catch {
+            // On any DOM-parse failure, leave the pasted HTML untouched.
             return html
           }
         },
