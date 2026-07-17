@@ -266,12 +266,21 @@ proc createNote*(): NoteMeta = createInDir(dataDir())
 proc duplicateNote*(id: string): NoteMeta = duplicateInDir(dataDir(), id)
 proc searchNotes*(query: string; limit = 200): seq[SearchHit] = searchIn(dataDir(), query, limit)
 
+proc backupIfExists(path: string) =
+  ## Rename an existing file aside instead of destroying it, so a same-id
+  ## collision during archive/restore can't silently discard a note. The
+  ## `.bak-…` name is unique (timestamp + oid) and isn't picked up by the
+  ## `*.md` listing, so it lingers harmlessly until manually cleaned up.
+  if fileExists(path):
+    let stamp = now().format("yyyyMMdd-HHmmss")
+    moveFile(path, path & ".bak-" & stamp & "-" & $genOid())
+
 # Soft delete: move the note into the archive. The original ID is preserved.
 proc deleteNote*(id: string) =
   let src = dataDir() / (id & ".md")
   if not fileExists(src): return
   let dst = archiveDir() / (id & ".md")
-  if fileExists(dst): removeFile(dst)
+  backupIfExists(dst)
   moveFile(src, dst)
 
 # ── Archive ─────────────────────────────────────────────────────────────────
@@ -286,7 +295,7 @@ proc restoreNote*(id: string) =
   let src = archiveDir() / (id & ".md")
   if not fileExists(src): return
   let dst = dataDir() / (id & ".md")
-  if fileExists(dst): removeFile(dst)
+  backupIfExists(dst)
   moveFile(src, dst)
 
 # Permanently delete from the archive (no recovery).
