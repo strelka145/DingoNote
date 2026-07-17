@@ -10,6 +10,7 @@
     setSpreadsheetChangeListener,
   } from './lib/editor'
   import { api } from './lib/api'
+  import { highlight } from './lib/highlight'
   import type { Note, NoteMeta, SearchHit } from './lib/types'
 
   type Mode = 'notes' | 'templates' | 'archive'
@@ -133,7 +134,7 @@
   async function duplicate(id: string, ev: Event) {
     ev.stopPropagation()
     clearPendingDelete()
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     const meta = await scopeApi().duplicate(id)
     await refresh()
@@ -166,7 +167,11 @@
     }
     try {
       await api.renameWikilinks(oldT, newT)
-    } catch {}
+    } catch (e) {
+      // Non-fatal: the note itself was already saved; only the backlink rename
+      // failed. Surface it rather than swallowing silently.
+      console.warn('renameWikilinks failed', e)
+    }
     loadedTitle = newT
   }
 
@@ -206,11 +211,24 @@
     templates = await api.listTemplates()
   }
 
+  // Monotonic guard: fast typing fires overlapping refresh()es, and a slower
+  // earlier request could resolve after a newer one. Each call claims a seq and
+  // bails after every await if a newer refresh has since started, so stale
+  // responses never overwrite the current results.
+  let refreshSeq = 0
   async function refresh() {
-    notes = await scopeApi().search(searchQuery)
-    if (mode === 'templates') templates = notes
-    else await refreshTemplates()
+    const seq = ++refreshSeq
+    const hits = await scopeApi().search(searchQuery)
+    if (seq !== refreshSeq) return
+    notes = hits
+    if (mode === 'templates') {
+      templates = notes
+    } else {
+      await refreshTemplates()
+      if (seq !== refreshSeq) return
+    }
     const all = await api.listNotes()
+    if (seq !== refreshSeq) return
     allNoteTitles = all.map((n) => n.title).filter(Boolean)
     allNoteIndex = new Map(
       all.filter((n) => n.title).map((n) => [n.title, n.id]),
@@ -219,7 +237,7 @@
 
   async function switchMode(next: Mode) {
     if (next === mode) return
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     loadedTitle = null
     mode = next
@@ -243,25 +261,6 @@
     searchQuery = ''
     refresh()
     searchInput?.focus()
-  }
-
-  function highlight(text: string, q: string): Array<{ s: string; m: boolean }> {
-    if (!q || !text) return [{ s: text, m: false }]
-    const lower = text.toLowerCase()
-    const lq = q.toLowerCase()
-    const out: Array<{ s: string; m: boolean }> = []
-    let i = 0
-    while (i < text.length) {
-      const idx = lower.indexOf(lq, i)
-      if (idx < 0) {
-        out.push({ s: text.slice(i), m: false })
-        break
-      }
-      if (idx > i) out.push({ s: text.slice(i, idx), m: false })
-      out.push({ s: text.slice(idx, idx + q.length), m: true })
-      i = idx + q.length
-    }
-    return out
   }
 
   function onGlobalKeyDown(ev: KeyboardEvent) {
@@ -290,7 +289,7 @@
   async function changeVault() {
     const path = await api.pickFolder(config.vaultPath)
     if (!path) return
-    await flushSave()
+    if (!(await flushSave())) return
     config = await api.configSet({ vaultPath: path })
     current = null
     await refresh()
@@ -307,7 +306,7 @@
 
   async function exportPDF() {
     if (!current || exporting) return
-    await flushSave()
+    if (!(await flushSave())) return
     const safeTitle = (current.title || 'untitled')
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim() || 'untitled'
@@ -380,7 +379,7 @@
   }
 
   async function select(id: string) {
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     if (current?.id === id) return
     current = await scopeApi().load(id)
@@ -390,7 +389,7 @@
   }
 
   async function newNote() {
-    await flushSave()
+    if (!(await flushSave())) return
     await commitWikilinkRename()
     const meta = await scopeApi().create()
     await refresh()
@@ -445,7 +444,9 @@
     }
   }
 
-  async function flushSave() {
+  // Returns true when it's safe to proceed (nothing to save, or the save
+  // succeeded); false when the save failed and the caller must not switch away.
+  async function flushSave(): Promise<boolean> {
     // Synchronously push any pending spreadsheet cell edits into the document
     // before reading current.content. Spreadsheet edits reach the doc via an
     // async microtask flush; on a note switch, focus has already left the grid
@@ -457,7 +458,7 @@
       clearTimeout(saveTimer)
       saveTimer = null
     }
-    if (!current || !dirty) return
+    if (!current || !dirty) return true
     const { id, title, tags, content } = current
     dirty = false
     saveState = 'saving'
@@ -466,11 +467,15 @@
       await scopeApi().save(id, title, tags ?? [], content)
       saveState = 'saved'
     } catch (e) {
+      // Keep the edit (dirty) and surface the error; callers must NOT proceed
+      // to switch notes, or the unsaved content would be silently discarded.
       saveState = 'error'
       saveError = e instanceof Error ? e.message : String(e)
       dirty = true
+      return false
     }
     await refresh()
+    return true
   }
 
   function formatDate(t: number) {
@@ -521,6 +526,7 @@
             })
             return doc.body.innerHTML
           } catch {
+            // On any DOM-parse failure, leave the pasted HTML untouched.
             return html
           }
         },

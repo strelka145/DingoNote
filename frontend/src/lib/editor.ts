@@ -22,106 +22,20 @@ import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
 
-type CellValue = string | number | boolean | null
-type GridData = CellValue[][]
-// `decimals[x]` = number of decimal places to DISPLAY for column x (a native
-// jspreadsheet column mask). null/absent = no formatting (show the raw value).
-// Display-only: the stored cell value / formula keeps full precision, so
-// downstream formulas are unaffected (unlike wrapping cells in ROUND()).
-type ColumnDecimals = (number | null)[]
-type SheetState = {
-  data: GridData
-  headers: string[]
-  decimals: ColumnDecimals
-}
-
-// jspreadsheet/jSuites numeric mask for n decimal places: 0 -> "0", 2 -> "0.00".
-function decimalsMask(n: number): string {
-  return n <= 0 ? '0' : '0.' + '0'.repeat(n)
-}
-
-// Inverse of decimalsMask: read a column mask back to a decimal count, or null
-// if it is not one of our decimal masks. Used to re-derive `decimals` from
-// jspreadsheet's live columns after operations (insert/delete/move column) that
-// shift the columns — so the stored decimals never drift out of alignment.
-function maskToDecimals(mask: unknown): number | null {
-  if (mask === '0') return 0
-  if (typeof mask === 'string') {
-    const m = mask.match(/^0\.(0+)$/)
-    if (m) return m[1].length
-  }
-  return null
-}
-
-// A numeric mask garbles non-numeric cells (e.g. a text "Memo" cell renders as
-// "-2"), so a decimal format must only be applied to columns that hold numbers.
-// A column is safe to format when every non-empty cell is a number or a formula
-// (empty columns are safe too — there is no text to mangle).
-function columnHasText(data: GridData, x: number): boolean {
-  for (const row of data) {
-    const v = row?.[x]
-    if (v == null || v === '') continue
-    const s = String(v).trim()
-    if (s.startsWith('=')) continue
-    if (!Number.isFinite(Number(s))) return true
-  }
-  return false
-}
-
-const DEFAULT_GRID: GridData = [
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-]
-
-function defaultColumnName(i: number): string {
-  let name = ''
-  let n = i
-  do {
-    name = String.fromCharCode(65 + (n % 26)) + name
-    n = Math.floor(n / 26) - 1
-  } while (n >= 0)
-  return name
-}
-
-function isDefaultColumnName(header: string, i: number): boolean {
-  return !header || header === defaultColumnName(i)
-}
-
-function parseGridJson(raw: string): SheetState {
-  try {
-    const obj = JSON.parse(raw)
-    if (Array.isArray(obj)) return { data: obj as GridData, headers: [], decimals: [] }
-    if (obj && Array.isArray(obj.data)) {
-      return {
-        data: obj.data as GridData,
-        headers: Array.isArray(obj.headers) ? obj.headers : [],
-        decimals: Array.isArray(obj.decimals) ? obj.decimals : [],
-      }
-    }
-  } catch {}
-  return { data: DEFAULT_GRID, headers: [], decimals: [] }
-}
-
-function escapeAttr(s: string) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-// Build the serialized `{data, headers?, decimals?}` object shared by the DOM
-// (data-content) and Markdown fence representations. Optional fields are only
-// emitted when they carry information, to keep saved notes clean.
-function buildSheetJson(node: any): Record<string, unknown> {
-  const out: Record<string, unknown> = { data: node.attrs.data ?? DEFAULT_GRID }
-  const headers = node.attrs.headers as string[] | undefined
-  if (headers && headers.some((h) => h && h.length > 0)) out.headers = headers
-  const decimals = node.attrs.decimals as ColumnDecimals | undefined
-  if (decimals && decimals.some((d) => d != null)) out.decimals = decimals
-  return out
-}
+import {
+  type GridData,
+  type ColumnDecimals,
+  DEFAULT_GRID,
+  decimalsMask,
+  maskToDecimals,
+  columnHasText,
+  trimTrailingEmptyRows,
+  isDefaultColumnName,
+  parseGridJson,
+  escapeAttr,
+  buildSheetJson,
+} from './spreadsheet-model'
+import { matchWikilink, renderWikilink } from './wikilink'
 
 // Each live spreadsheet NodeView registers a synchronous "commit" here. The app
 // calls commitAllSpreadsheets() right before saving so any pending cell edit is
@@ -133,7 +47,9 @@ export function commitAllSpreadsheets() {
   for (const commit of spreadsheetCommitters) {
     try {
       commit()
-    } catch {}
+    } catch {
+      // One sheet failing to commit must not block the others or the save.
+    }
   }
 }
 
@@ -256,6 +172,26 @@ const Spreadsheet = TiptapNode.create({
           tr = tr.setNodeAttribute(pos, 'headers', newHeaders)
           changed = true
         }
+        // Re-derive decimals from jspreadsheet's live column masks. jspreadsheet
+        // shifts options.columns with the grid on insert/delete/move column, so
+        // reading the masks back keeps `decimals` aligned to the data — a
+        // separately-maintained array would drift after a column operation.
+        const cols = (sheet.options?.columns as any[]) ?? []
+        const colCount = newData[0]?.length ?? 0
+        const newDecimals: ColumnDecimals = []
+        for (let x = 0; x < colCount; x++) {
+          newDecimals[x] = maskToDecimals(cols[x]?.mask)
+        }
+        while (newDecimals.length && newDecimals[newDecimals.length - 1] == null) {
+          newDecimals.pop()
+        }
+        if (
+          JSON.stringify(current.attrs.decimals ?? []) !==
+          JSON.stringify(newDecimals)
+        ) {
+          tr = tr.setNodeAttribute(pos, 'decimals', newDecimals)
+          changed = true
+        }
         if (changed) {
           editor.view.dispatch(tr)
           // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
@@ -277,7 +213,9 @@ const Spreadsheet = TiptapNode.create({
         const sheet = sheets[0]
         try {
           sheet?.closeEditor?.(sheet.edition?.cell, true)
-        } catch {}
+        } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         schedule()
       }
 
@@ -292,7 +230,9 @@ const Spreadsheet = TiptapNode.create({
         if (!wrapper.contains(document.activeElement)) {
           try {
             sheet.closeEditor?.(sheet.edition?.cell, true)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         }
         flush()
       }
@@ -312,21 +252,28 @@ const Spreadsheet = TiptapNode.create({
             childList: true,
             characterData: true,
           })
-        } catch {}
+        } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
       })
 
       const initialData = (node.attrs.data as GridData) ?? DEFAULT_GRID
       const initialHeaders = (node.attrs.headers as string[]) ?? []
       const initialDecimals = (node.attrs.decimals as ColumnDecimals) ?? []
-      const rows = Math.max(3, initialData.length || 3)
-      const cols = Math.max(3, initialData[0]?.length || 3, initialHeaders.length)
+      // Trim trailing empty rows so jspreadsheet's min-rows padding doesn't
+      // linger as a phantom row. An all-empty sheet falls back to DEFAULT_GRID
+      // so a freshly-inserted spreadsheet still opens with a usable 3×3 grid.
+      const trimmed = trimTrailingEmptyRows(initialData)
+      const gridData = trimmed.length ? trimmed : DEFAULT_GRID
+      const rows = gridData.length
+      const cols = Math.max(3, gridData[0]?.length || 3, initialHeaders.length)
       const columns = Array.from({ length: cols }, (_, i) => ({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
         // Display-only decimal formatting (see ColumnDecimals). The stored value
         // stays raw, so dependent formulas use full precision. Never mask a
         // column that holds text — a numeric mask would garble it.
-        ...(initialDecimals[i] != null && !columnHasText(initialData, i)
+        ...(initialDecimals[i] != null && !columnHasText(gridData, i)
           ? { mask: decimalsMask(initialDecimals[i] as number) }
           : {}),
       }))
@@ -338,7 +285,7 @@ const Spreadsheet = TiptapNode.create({
             // it shared the node's attrs.data reference, flush's change check
             // (getData() vs attrs.data) would always compare the array to
             // itself and never detect an edit — so edits would never save.
-            data: initialData.map((r) => r.slice()),
+            data: gridData.map((r) => r.slice()),
             columns,
             minDimensions: [cols, rows],
             tableOverflow: false,
@@ -416,7 +363,9 @@ const Spreadsheet = TiptapNode.create({
           const next = input.value.trim()
           try {
             sheet0()?.setHeader?.(colIndex, next || undefined)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
           schedule()
         }
         input.addEventListener('blur', () => finish(true))
@@ -542,20 +491,14 @@ const Spreadsheet = TiptapNode.create({
       // to whole columns. `places === null` clears the format.
       const applyDecimals = (places: number | null) => {
         const s = sheet0()
-        if (!s || !lastSelection || typeof getPos !== 'function') return
-        const pos = getPos()
-        if (pos == null) return
-        const target = editor.state.doc.nodeAt(pos)
-        if (!target) return
+        if (!s || !lastSelection) return
         const data = s.getData(false) as GridData
         const colCount = data[0]?.length ?? 0
         const [x1, , x2] = lastSelection
-        const next = ((target.attrs.decimals as ColumnDecimals) ?? []).slice()
         if (!s.options.columns) s.options.columns = []
         for (let x = x1; x <= Math.min(x2, colCount - 1); x++) {
           // Skip text columns: a numeric mask would garble their display.
           if (places != null && columnHasText(data, x)) continue
-          next[x] = places
           if (!s.options.columns[x]) s.options.columns[x] = {}
           s.options.columns[x].mask =
             places == null ? undefined : decimalsMask(places)
@@ -568,11 +511,9 @@ const Spreadsheet = TiptapNode.create({
         } finally {
           updating = false
         }
-        // Persist the column format and trigger a save.
-        editor.view.dispatch(
-          editor.state.tr.setNodeAttribute(pos, 'decimals', next),
-        )
-        spreadsheetChangeListener?.()
+        // flush() re-derives `decimals` from these column masks and triggers the
+        // save — keeping it the single source of truth for the format.
+        schedule()
       }
 
       const decimalGroup = document.createElement('div')
@@ -614,10 +555,14 @@ const Spreadsheet = TiptapNode.create({
           spreadsheetCommitters.delete(commitNow)
           try {
             gridObserver.disconnect()
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
           try {
             ;(jspreadsheet as any).destroy(inner, true)
-          } catch {}
+          } catch {
+          /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
+        }
         },
         stopEvent: () => true,
         ignoreMutations: () => true,
@@ -725,7 +670,9 @@ async function persistImageFile(file: File): Promise<string | null> {
         const { api } = await import('./api')
         const rel = await api.saveAttachment(dataUrl)
         resolve(rel)
-      } catch {
+      } catch (e) {
+        // Attachment save failed — paste continues without the image.
+        console.warn('saveAttachment failed', e)
         resolve(null)
       }
     }
@@ -1091,33 +1038,18 @@ const WikiLink = TiptapNode.create({
               'emphasis',
               'wikilink',
               (state: any, silent: boolean) => {
-                if (state.src.charCodeAt(state.pos) !== 0x5b) return false
-                if (state.src.charCodeAt(state.pos + 1) !== 0x5b) return false
-                const close = state.src.indexOf(']]', state.pos + 2)
-                if (close < 0) return false
-                const title = state.src.slice(state.pos + 2, close)
-                // Empty or containing newline/[ rejected
-                if (
-                  title.length === 0 ||
-                  /[\[\n]/.test(title)
-                ) return false
+                const m = matchWikilink(state.src, state.pos)
+                if (!m) return false
                 if (!silent) {
                   const token = state.push('wikilink', '', 0)
-                  token.content = title
+                  token.content = m.title
                 }
-                state.pos = close + 2
+                state.pos = m.end
                 return true
               },
             )
-            md.renderer.rules.wikilink = (tokens: any[], idx: number) => {
-              const t = tokens[idx].content
-              const escaped = t
-                .replace(/&/g, '&amp;')
-                .replace(/"/g, '&quot;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-              return `<a data-wikilink="${escaped}" href="#">${escaped}</a>`
-            }
+            md.renderer.rules.wikilink = (tokens: any[], idx: number) =>
+              renderWikilink(tokens[idx].content)
           },
         },
       },

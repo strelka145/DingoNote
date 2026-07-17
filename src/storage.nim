@@ -60,7 +60,7 @@ proc writeGitignore*(): tuple[created: bool, path: string] =
   let path = dataDir() / ".gitignore"
   if fileExists(path):
     return (false, path)
-  writeFile(path, gitignoreTemplate)
+  atomicWrite(path, gitignoreTemplate)
   result = (true, path)
 
 proc parseTagLine(line: string): seq[string] =
@@ -91,7 +91,11 @@ proc parseNote(full: string): tuple[title: string, tags: seq[string], body: stri
   var i = 0
   while i < lines.len and lines[i].strip().len == 0:
     inc i
-  if i < lines.len and lines[i].startsWith("# "):
+  if i < lines.len and lines[i] == "#":
+    # A bare "#" is the empty-title marker saveToDir writes to keep a body that
+    # starts with "# …" or a #tag line out of the title/tags fields. Consume it.
+    inc i
+  elif i < lines.len and lines[i].startsWith("# "):
     result.title = lines[i][2..^1].strip()
     inc i
   if i < lines.len:
@@ -107,14 +111,22 @@ proc mtimeMs(path: string): int64 =
   (getLastModificationTime(path).toUnix * 1000) +
     int64(getLastModificationTime(path).nanosecond div 1_000_000)
 
+proc snapToCharStart(s: string, i: int): int =
+  ## Move a byte index back to the start of the UTF-8 character it lands in, so
+  ## slicing there never cuts a multibyte char (which would break the snippet's
+  ## UTF-8 — e.g. Japanese text with radius offsets that land mid-character).
+  result = i
+  while result > 0 and result < s.len and (s[result].uint8 and 0xC0'u8) == 0x80'u8:
+    dec result
+
 proc extractSnippet(body: string, query: string, radius = 60): string =
   if query.len == 0 or body.len == 0: return ""
   let lower = body.toLowerAscii()
   let needle = query.toLowerAscii()
   let idx = lower.find(needle)
   if idx < 0: return ""
-  let startI = max(0, idx - radius)
-  let endI = min(body.len, idx + needle.len + radius)
+  let startI = snapToCharStart(body, max(0, idx - radius))
+  let endI = snapToCharStart(body, min(body.len, idx + needle.len + radius))
   var s = body[startI ..< endI]
   s = s.replace("\n", " ").replace("\r", " ")
   s = s.strip()
@@ -124,16 +136,6 @@ proc extractSnippet(body: string, query: string, radius = 60): string =
 
 # ── Generic helpers ─────────────────────────────────────────────────────────
 
-proc listIn(dir: string): seq[NoteMeta] =
-  for kind, path in walkDir(dir):
-    if kind != pcFile or not path.endsWith(".md"): continue
-    let id = path.splitFile.name
-    let full = try: readFile(path) except CatchableError: ""
-    let (title, tags, _) = parseNote(full)
-    result.add NoteMeta(id: id, title: title, tags: tags, updatedAt: mtimeMs(path))
-  result.sort do (a, b: NoteMeta) -> int:
-    cmp(b.updatedAt, a.updatedAt)
-
 proc loadFromDir(dir, id: string): Option[Note] =
   let path = dir / (id & ".md")
   if not fileExists(path): return none(Note)
@@ -141,21 +143,35 @@ proc loadFromDir(dir, id: string): Option[Note] =
   let (title, tags, body) = parseNote(full)
   some(Note(id: id, title: title, tags: tags, content: body, updatedAt: mtimeMs(path)))
 
+proc bodyStartsAmbiguous(content: string): bool =
+  ## True if the body's first non-blank line would be re-parsed as a title
+  ## (`# …`) or a tag line (`#a #b`). Only meaningful when no title/tag header
+  ## is written — otherwise that content line migrates into a field on load.
+  for line in content.splitLines:
+    if line.strip().len == 0: continue
+    return line.startsWith("# ") or parseTagLine(line).len > 0
+  false
+
 proc saveToDir(dir, id, title: string, tags: seq[string], content: string) =
   let path = dir / (id & ".md")
   var head = ""
   if title.len > 0: head.add "# " & title & "\n"
   let tl = tagLine(tags)
   if tl.len > 0: head.add tl & "\n"
+  # With no title/tag header, disambiguate a body that itself starts with a
+  # "# …" or #tag line by writing a bare "#" empty-title marker (parseNote
+  # consumes it), so the body round-trips instead of losing its first line.
+  if head.len == 0 and bodyStartsAmbiguous(content):
+    head = "#\n"
   let body =
     if head.len > 0: head & "\n" & content
     else: content
-  writeFile(path, body)
+  atomicWrite(path, body)
 
 proc createInDir(dir: string): NoteMeta =
   let id = $genOid()
   let path = dir / (id & ".md")
-  writeFile(path, "")
+  atomicWrite(path, "")
   NoteMeta(id: id, title: "", updatedAt: mtimeMs(path))
 
 proc deleteInDir(dir, id: string) =
@@ -173,9 +189,13 @@ proc renameWikilinks*(oldTitle, newTitle: string): int =
   for dir in [dataDir(), templatesDir()]:
     for kind, path in walkDir(dir):
       if kind != pcFile or not path.endsWith(".md"): continue
-      let content = try: readFile(path) except CatchableError: continue
+      let content =
+        try: readFile(path)
+        except CatchableError as e:
+          stderr.writeLine("dingonote: skipping unreadable note " & path & ": " & e.msg)
+          continue
       if not content.contains(oldRef): continue
-      writeFile(path, content.replace(oldRef, newRef))
+      atomicWrite(path, content.replace(oldRef, newRef))
       inc result
 
 proc duplicateInDir(dir, srcId: string): NoteMeta =
@@ -196,7 +216,12 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
   let q = query.toLowerAscii().strip()
   for kind, path in walkDir(dir):
     if kind != pcFile or not path.endsWith(".md"): continue
-    let full = try: readFile(path) except CatchableError: ""
+    let full =
+      try: readFile(path)
+      except CatchableError as e:
+        # Skip this note in the results but keep searching the rest.
+        stderr.writeLine("dingonote: skipping unreadable note " & path & ": " & e.msg)
+        ""
     let id = path.splitFile.name
     let (title, tags, body) = parseNote(full)
 
@@ -209,7 +234,9 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
         if t.toLowerAscii().contains(q): tagMatch = true; break
       if not titleMatch and not bodyMatch and not tagMatch: continue
       snippet =
-        if bodyMatch: extractSnippet(body, query)
+        # Use the normalized query `q` (matching used it too); the raw `query`
+        # may carry surrounding whitespace that makes extractSnippet's find fail.
+        if bodyMatch: extractSnippet(body, q)
         elif titleMatch: title
         else: "#" & tags.join(" #")
 
@@ -217,9 +244,22 @@ proc searchIn(dir: string; query: string; limit = 200): seq[SearchHit] =
       id: id, title: title, tags: tags,
       updatedAt: mtimeMs(path), snippet: snippet,
     )
-    if result.len >= limit: break
+  # Collect all matches, sort newest-first, THEN truncate. Applying the limit
+  # inside the walkDir loop (whose order is filesystem-dependent) would drop
+  # arbitrary — possibly the newest — notes before they could be ranked.
   result.sort do (a, b: SearchHit) -> int:
     cmp(b.updatedAt, a.updatedAt)
+  if result.len > limit:
+    result.setLen(limit)
+
+proc listIn(dir: string): seq[NoteMeta] =
+  ## The note list is just an empty-query search (already collected + sorted
+  ## newest-first); drop the empty snippet. `int.high` = no cap: the list must
+  ## show every note, not the search result limit.
+  for hit in searchIn(dir, "", int.high):
+    result.add NoteMeta(
+      id: hit.id, title: hit.title, tags: hit.tags, updatedAt: hit.updatedAt,
+    )
 
 # ── Notes ───────────────────────────────────────────────────────────────────
 
@@ -235,12 +275,21 @@ proc createNote*(): NoteMeta = createInDir(dataDir())
 proc duplicateNote*(id: string): NoteMeta = duplicateInDir(dataDir(), id)
 proc searchNotes*(query: string; limit = 200): seq[SearchHit] = searchIn(dataDir(), query, limit)
 
+proc backupIfExists(path: string) =
+  ## Rename an existing file aside instead of destroying it, so a same-id
+  ## collision during archive/restore can't silently discard a note. The
+  ## `.bak-…` name is unique (timestamp + oid) and isn't picked up by the
+  ## `*.md` listing, so it lingers harmlessly until manually cleaned up.
+  if fileExists(path):
+    let stamp = now().format("yyyyMMdd-HHmmss")
+    moveFile(path, path & ".bak-" & stamp & "-" & $genOid())
+
 # Soft delete: move the note into the archive. The original ID is preserved.
 proc deleteNote*(id: string) =
   let src = dataDir() / (id & ".md")
   if not fileExists(src): return
   let dst = archiveDir() / (id & ".md")
-  if fileExists(dst): removeFile(dst)
+  backupIfExists(dst)
   moveFile(src, dst)
 
 # ── Archive ─────────────────────────────────────────────────────────────────
@@ -255,7 +304,7 @@ proc restoreNote*(id: string) =
   let src = archiveDir() / (id & ".md")
   if not fileExists(src): return
   let dst = dataDir() / (id & ".md")
-  if fileExists(dst): removeFile(dst)
+  backupIfExists(dst)
   moveFile(src, dst)
 
 # Permanently delete from the archive (no recovery).
@@ -298,5 +347,5 @@ proc saveAttachment*(dataUrl: string): string =
   let payload = dataUrl[(comma + 1) .. ^1]
   let data = base64.decode(payload)
   let filename = $genOid() & "." & ext
-  writeFile(attachmentsDir() / filename, data)
+  atomicWrite(attachmentsDir() / filename, data)
   result = "attachments/" & filename
