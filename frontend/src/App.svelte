@@ -207,11 +207,24 @@
     templates = await api.listTemplates()
   }
 
+  // Monotonic guard: fast typing fires overlapping refresh()es, and a slower
+  // earlier request could resolve after a newer one. Each call claims a seq and
+  // bails after every await if a newer refresh has since started, so stale
+  // responses never overwrite the current results.
+  let refreshSeq = 0
   async function refresh() {
-    notes = await scopeApi().search(searchQuery)
-    if (mode === 'templates') templates = notes
-    else await refreshTemplates()
+    const seq = ++refreshSeq
+    const hits = await scopeApi().search(searchQuery)
+    if (seq !== refreshSeq) return
+    notes = hits
+    if (mode === 'templates') {
+      templates = notes
+    } else {
+      await refreshTemplates()
+      if (seq !== refreshSeq) return
+    }
     const all = await api.listNotes()
+    if (seq !== refreshSeq) return
     allNoteTitles = all.map((n) => n.title).filter(Boolean)
     allNoteIndex = new Map(
       all.filter((n) => n.title).map((n) => [n.title, n.id]),
