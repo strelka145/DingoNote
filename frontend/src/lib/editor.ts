@@ -532,16 +532,55 @@ const Spreadsheet = TiptapNode.create({
           if (updated.type.name !== 'spreadsheet') return false
           const sheet = sheets[0]
           if (!sheet) return true
-          const incoming = updated.attrs.data as GridData
-          if (
-            JSON.stringify(sheet.getData()) !== JSON.stringify(incoming)
-          ) {
-            updating = true
-            try {
-              sheet.setData(incoming as any)
-            } finally {
-              updating = false
+          // Re-sync jspreadsheet to the node attrs. Besides data, headers and
+          // decimals are handled too, so an undo/redo (or external attr change)
+          // reverts the column titles and number formats in the display — not
+          // just the cell values. `updating` guards the flush the resulting DOM
+          // mutations would otherwise trigger.
+          updating = true
+          try {
+            const colCount = sheet.getData()?.[0]?.length ?? 0
+
+            // Column titles (a default letter and "" are equivalent).
+            const wantHeaders = (updated.attrs.headers as string[]) ?? []
+            const curHeaders = (sheet.getHeaders?.(true) as string[]) ?? []
+            for (let x = 0; x < colCount; x++) {
+              const want = wantHeaders[x] ?? ''
+              const cur = isDefaultColumnName(curHeaders[x] ?? '', x)
+                ? ''
+                : curHeaders[x] ?? ''
+              if (cur === want) continue
+              if (want) sheet.setHeader(x, want)
+              else sheet.setHeader(x) // reset to the default column letter
             }
+
+            // Column decimal formats (display-only masks).
+            const wantDecimals = (updated.attrs.decimals as ColumnDecimals) ?? []
+            if (!sheet.options.columns) sheet.options.columns = []
+            let masksChanged = false
+            for (let x = 0; x < colCount; x++) {
+              const wantMask =
+                wantDecimals[x] == null
+                  ? undefined
+                  : decimalsMask(wantDecimals[x] as number)
+              if (!sheet.options.columns[x]) sheet.options.columns[x] = {}
+              if (sheet.options.columns[x].mask !== wantMask) {
+                sheet.options.columns[x].mask = wantMask
+                masksChanged = true
+              }
+            }
+
+            // Cell values — also re-render when masks changed so the new
+            // format takes effect even if the data itself is unchanged.
+            const incoming = updated.attrs.data as GridData
+            if (
+              masksChanged ||
+              JSON.stringify(sheet.getData()) !== JSON.stringify(incoming)
+            ) {
+              sheet.setData(incoming as any)
+            }
+          } finally {
+            updating = false
           }
           return true
         },
