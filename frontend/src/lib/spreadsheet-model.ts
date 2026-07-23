@@ -33,6 +33,21 @@ export function maskToDecimals(mask: unknown): number | null {
   return null
 }
 
+// Re-derive per-column decimals from jspreadsheet's live column options. Reading
+// the masks back (instead of maintaining a separate array) keeps `decimals`
+// aligned to the data after jspreadsheet shifts columns on insert/delete/move —
+// a separately-tracked array would drift. Trailing nulls are dropped so the
+// serialized form stays minimal.
+export function deriveColumnDecimals(
+  columns: ReadonlyArray<{ mask?: unknown } | null | undefined>,
+  colCount: number,
+): ColumnDecimals {
+  const out: ColumnDecimals = []
+  for (let x = 0; x < colCount; x++) out[x] = maskToDecimals(columns[x]?.mask)
+  while (out.length && out[out.length - 1] == null) out.pop()
+  return out
+}
+
 // A numeric mask garbles non-numeric cells (e.g. a text "Memo" cell renders as
 // "-2"), so a decimal format must only be applied to columns that hold numbers.
 // A column is safe to format when every non-empty cell is a number or a formula

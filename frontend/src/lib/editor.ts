@@ -27,7 +27,7 @@ import {
   type ColumnDecimals,
   DEFAULT_GRID,
   decimalsMask,
-  maskToDecimals,
+  deriveColumnDecimals,
   columnHasText,
   trimTrailingEmptyRows,
   isDefaultColumnName,
@@ -172,19 +172,13 @@ const Spreadsheet = TiptapNode.create({
           tr = tr.setNodeAttribute(pos, 'headers', newHeaders)
           changed = true
         }
-        // Re-derive decimals from jspreadsheet's live column masks. jspreadsheet
-        // shifts options.columns with the grid on insert/delete/move column, so
-        // reading the masks back keeps `decimals` aligned to the data — a
-        // separately-maintained array would drift after a column operation.
-        const cols = (sheet.options?.columns as any[]) ?? []
-        const colCount = newData[0]?.length ?? 0
-        const newDecimals: ColumnDecimals = []
-        for (let x = 0; x < colCount; x++) {
-          newDecimals[x] = maskToDecimals(cols[x]?.mask)
-        }
-        while (newDecimals.length && newDecimals[newDecimals.length - 1] == null) {
-          newDecimals.pop()
-        }
+        // Re-derive decimals from jspreadsheet's live column masks (see
+        // deriveColumnDecimals): reading the masks back keeps `decimals` aligned
+        // to the data after jspreadsheet shifts columns on insert/delete/move.
+        const newDecimals = deriveColumnDecimals(
+          (sheet.options?.columns as any[]) ?? [],
+          newData[0]?.length ?? 0,
+        )
         if (
           JSON.stringify(current.attrs.decimals ?? []) !==
           JSON.stringify(newDecimals)
