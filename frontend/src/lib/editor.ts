@@ -5,7 +5,6 @@ import {
   mergeAttributes,
 } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
-import ListItem from '@tiptap/extension-list-item'
 import { TableKit } from '@tiptap/extension-table'
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
 import { common, createLowlight } from 'lowlight'
@@ -13,11 +12,13 @@ import nim from 'highlight.js/lib/languages/nim'
 
 const lowlight = createLowlight(common)
 lowlight.register('nim', nim)
-import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { TablePaste } from './extensions/table-paste'
+import { FlexibleListItem } from './extensions/flexible-list-item'
+import { ResizableImage } from './extensions/resizable-image'
+import { ImagePaste } from './extensions/image-paste'
 import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
@@ -43,7 +44,6 @@ import {
   templateLoader,
   wikilinkTitles,
   wikilinkNavigate,
-  vaultPathProvider,
 } from './editor-context'
 // Re-export the runtime-wiring API from here so App.svelte keeps a single
 // import surface (`./lib/editor`); the state itself lives in editor-context.
@@ -639,35 +639,6 @@ const Spreadsheet = TiptapNode.create({
   },
 })
 
-function resolveImageSrc(src: string): string {
-  if (!src) return src
-  if (/^(https?|data|blob|file):/.test(src)) return src
-  const vp = vaultPathProvider()
-  if (!vp) return src
-  const cleaned = src.replace(/^\.?\/+/, '')
-  return `file://${vp}/${cleaned}`
-}
-
-async function persistImageFile(file: File): Promise<string | null> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = async () => {
-      try {
-        const dataUrl = String(reader.result)
-        const { api } = await import('./api')
-        const rel = await api.saveAttachment(dataUrl)
-        resolve(rel)
-      } catch (e) {
-        // Attachment save failed — paste continues without the image.
-        console.warn('saveAttachment failed', e)
-        resolve(null)
-      }
-    }
-    reader.onerror = () => resolve(null)
-    reader.readAsDataURL(file)
-  })
-}
-
 interface SlashItem {
   title: string
   shortcut: string
@@ -1178,216 +1149,6 @@ const WikiLinkSuggestion = Extension.create({
       }),
     ]
   },
-})
-
-// ── Resizable image (extends @tiptap/extension-image) ───────────────────────
-
-const ResizableImage = Image.extend({
-  addOptions() {
-    return {
-      ...this.parent?.(),
-      inline: false,
-      allowBase64: true,
-    }
-  },
-
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      width: {
-        default: null,
-        parseHTML: (el) => {
-          const v = (el as HTMLElement).getAttribute('width')
-          if (!v) return null
-          const n = parseInt(v, 10)
-          return Number.isFinite(n) && n > 0 ? n : null
-        },
-        renderHTML: (attrs: any) =>
-          attrs.width ? { width: String(attrs.width) } : {},
-      },
-    }
-  },
-
-  addNodeView() {
-    return ({ node, editor, getPos }) => {
-      const wrapper = document.createElement('span')
-      wrapper.className = 'image-wrapper'
-
-      const img = document.createElement('img')
-      img.src = resolveImageSrc(node.attrs.src)
-      if (node.attrs.alt) img.alt = node.attrs.alt
-      if (node.attrs.width) img.style.width = `${node.attrs.width}px`
-      wrapper.appendChild(img)
-
-      const handle = document.createElement('span')
-      handle.className = 'image-resize-handle'
-      handle.setAttribute('aria-hidden', 'true')
-      wrapper.appendChild(handle)
-
-      handle.addEventListener('mousedown', (ev) => {
-        ev.preventDefault()
-        ev.stopPropagation()
-        const startX = ev.clientX
-        const startW = img.getBoundingClientRect().width
-        document.body.style.cursor = 'nwse-resize'
-
-        const onMove = (e: MouseEvent) => {
-          const dx = e.clientX - startX
-          const next = Math.max(40, Math.round(startW + dx))
-          img.style.width = `${next}px`
-        }
-        const onUp = () => {
-          document.body.style.cursor = ''
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup', onUp)
-          if (typeof getPos !== 'function') return
-          const pos = getPos()
-          if (pos == null) return
-          const finalW = Math.round(img.getBoundingClientRect().width)
-          editor.view.dispatch(
-            editor.state.tr.setNodeAttribute(pos, 'width', finalW),
-          )
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup', onUp)
-      })
-
-      return {
-        dom: wrapper,
-        update(updated) {
-          if (updated.type.name !== 'image') return false
-          const resolved = resolveImageSrc(updated.attrs.src)
-          if (img.src !== resolved) img.src = resolved
-          img.alt = updated.attrs.alt ?? ''
-          img.style.width = updated.attrs.width
-            ? `${updated.attrs.width}px`
-            : ''
-          return true
-        },
-        selectNode() {
-          wrapper.classList.add('selected')
-        },
-        deselectNode() {
-          wrapper.classList.remove('selected')
-        },
-        stopEvent(e) {
-          return e.target === handle || handle.contains(e.target as Node)
-        },
-      }
-    }
-  },
-
-  addStorage() {
-    const parent = (this.parent?.() ?? {}) as Record<string, any>
-    return {
-      ...parent,
-      markdown: {
-        ...(parent.markdown ?? {}),
-        serialize(state: any, node: any) {
-          const { src, alt, width } = node.attrs
-          const altE = String(alt ?? '').replace(/"/g, '&quot;')
-          if (width) {
-            const srcE = String(src ?? '').replace(/"/g, '&quot;')
-            state.write(`<img src="${srcE}" alt="${altE}" width="${width}">`)
-          } else {
-            state.write(`![${alt ?? ''}](${src})`)
-          }
-          state.closeBlock(node)
-        },
-        parse: { setup() {} },
-      },
-    }
-  },
-})
-
-// ── Image paste / drag-and-drop ─────────────────────────────────────────────
-
-function fileToDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
-const ImagePaste = Extension.create({
-  name: 'imagePaste',
-  addProseMirrorPlugins() {
-    const editor = this.editor
-    const insertImage = (src: string, pos?: number) => {
-      const node = editor.schema.nodes.image?.create({ src })
-      if (!node) return
-      const { state, view } = editor
-      const tr = pos != null ? state.tr.insert(pos, node) : state.tr.replaceSelectionWith(node)
-      view.dispatch(tr)
-    }
-    return [
-      new Plugin({
-        props: {
-          handlePaste(_view, event) {
-            const data = event.clipboardData
-            if (!data) return false
-            const items = Array.from(data.items)
-
-            // Excel / Google Sheets / browser copy bundles a rendered image
-            // preview alongside HTML and plain text. If structured content
-            // is present, defer to TipTap so the table / formatted text
-            // gets pasted instead of the image preview.
-            const hasStructuredText = items.some(
-              (it) =>
-                it.kind === 'string' &&
-                (it.type === 'text/html' || it.type === 'text/plain'),
-            )
-            if (hasStructuredText) return false
-
-            // Pure image paste (screenshot tool, image-only clipboard, etc.) —
-            // require kind=file to avoid grabbing in-line image previews.
-            const imageFiles = items
-              .filter(
-                (it) => it.kind === 'file' && it.type.startsWith('image/'),
-              )
-              .map((it) => it.getAsFile())
-              .filter((f): f is File => !!f)
-            if (imageFiles.length === 0) return false
-            for (const file of imageFiles) {
-              persistImageFile(file).then((rel) => {
-                if (rel) insertImage(rel)
-              })
-            }
-            event.preventDefault()
-            return true
-          },
-          handleDrop(view, event, _slice, moved) {
-            if (moved) return false
-            const files = Array.from(event.dataTransfer?.files ?? []).filter(
-              (f) => f.type.startsWith('image/'),
-            )
-            if (files.length === 0) return false
-            const pos = view.posAtCoords({
-              left: event.clientX,
-              top: event.clientY,
-            })?.pos
-            for (const file of files) {
-              persistImageFile(file).then((rel) => {
-                if (rel) insertImage(rel, pos)
-              })
-            }
-            event.preventDefault()
-            return true
-          },
-        },
-      }),
-    ]
-  },
-})
-
-// Override the default ListItem so list items can contain any block
-// (code blocks, blockquotes, nested lists, multiple paragraphs, etc.)
-// instead of the StarterKit default `'paragraph block*'` which pins the
-// first child to a plain paragraph.
-const FlexibleListItem = ListItem.extend({
-  content: 'block+',
 })
 
 export const editorExtensions = [
