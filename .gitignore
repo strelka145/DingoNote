@@ -20,3 +20,4 @@ FIX_PLAN.md
 REFACTORING.md
 # Local-only GitHub helper (keep CI workflows tracked)
 /.github/copilot-instructions.md
+/.tokensave
