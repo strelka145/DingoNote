@@ -36,31 +36,25 @@ import {
   buildSheetJson,
 } from './spreadsheet-model'
 import { matchWikilink, renderWikilink } from './wikilink'
-
-// Each live spreadsheet NodeView registers a synchronous "commit" here. The app
-// calls commitAllSpreadsheets() right before saving so any pending cell edit is
-// pushed into the document first. Spreadsheet edits otherwise reach the doc via
-// an async microtask flush, which races with (and loses to) a note switch.
-const spreadsheetCommitters = new Set<() => void>()
-
-export function commitAllSpreadsheets() {
-  for (const commit of spreadsheetCommitters) {
-    try {
-      commit()
-    } catch {
-      // One sheet failing to commit must not block the others or the save.
-    }
-  }
-}
-
-// The app registers a callback here so a spreadsheet flush can signal a content
-// change (re-serialize + schedule save). A setNodeAttribute transaction doesn't
-// reliably trigger TipTap's onUpdate, so onUpdate alone misses spreadsheet edits.
-let spreadsheetChangeListener: (() => void) | null = null
-
-export function setSpreadsheetChangeListener(fn: (() => void) | null) {
-  spreadsheetChangeListener = fn
-}
+import {
+  spreadsheetCommitters,
+  notifySpreadsheetChange,
+  templatesProvider,
+  templateLoader,
+  wikilinkTitles,
+  wikilinkNavigate,
+  vaultPathProvider,
+} from './editor-context'
+// Re-export the runtime-wiring API from here so App.svelte keeps a single
+// import surface (`./lib/editor`); the state itself lives in editor-context.
+export {
+  commitAllSpreadsheets,
+  setSpreadsheetChangeListener,
+  setTemplatesProvider,
+  setWikilinkContext,
+  setVaultPathProvider,
+  type TemplateRef,
+} from './editor-context'
 
 const Spreadsheet = TiptapNode.create({
   name: 'spreadsheet',
@@ -190,7 +184,7 @@ const Spreadsheet = TiptapNode.create({
           editor.view.dispatch(tr)
           // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
           // the app explicitly to re-serialize and schedule a save.
-          spreadsheetChangeListener?.()
+          notifySpreadsheetChange()
         }
       }
 
@@ -644,46 +638,6 @@ const Spreadsheet = TiptapNode.create({
     }
   },
 })
-
-// ── Slash commands ──────────────────────────────────────────────────────────
-
-export interface TemplateRef {
-  id: string
-  title: string
-}
-
-let templatesProvider: () => TemplateRef[] = () => []
-let templateLoader: (id: string) => Promise<{ content: string } | null> =
-  async () => null
-
-export function setTemplatesProvider(
-  provider: () => TemplateRef[],
-  loader: (id: string) => Promise<{ content: string } | null>,
-) {
-  templatesProvider = provider
-  templateLoader = loader
-}
-
-// Wiki-style cross-note links. App.svelte supplies the title list and the
-// navigation callback; the editor uses these from the wikilink node's click
-// handler and from the `[[…]]` autocomplete.
-let wikilinkTitles: () => string[] = () => []
-let wikilinkNavigate: (title: string) => void = () => {}
-
-export function setWikilinkContext(
-  titles: () => string[],
-  navigate: (title: string) => void,
-) {
-  wikilinkTitles = titles
-  wikilinkNavigate = navigate
-}
-
-// Vault path provider — used to resolve vault-relative image paths
-// (e.g. "attachments/x.png") to file:// URLs the WKWebView can load.
-let vaultPathProvider: () => string = () => ''
-export function setVaultPathProvider(p: () => string) {
-  vaultPathProvider = p
-}
 
 function resolveImageSrc(src: string): string {
   if (!src) return src
