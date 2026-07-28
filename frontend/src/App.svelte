@@ -500,36 +500,12 @@
       // Wider safety zone around the caret before ProseMirror's
       // scrollIntoView fires — reduces oscillation when typing near
       // the viewport edges.
+      // Table-paste normalization (td->th promotion + header retyping) lives in
+      // the TablePaste extension (lib/extensions/table-paste.ts), so the whole
+      // paste story is in one place.
       editorProps: {
         scrollMargin: 80,
         scrollThreshold: 80,
-        // Excel / Google Sheets emit tables with only <td> (no <thead> or
-        // <th>), so TipTap treats every row as a data row and the table
-        // ends up headerless. Promote the first row's cells to <th> when
-        // none are present so pasted tables keep a sensible header.
-        transformPastedHTML(html) {
-          if (!html || !/<table\b/i.test(html)) return html
-          try {
-            const doc = new DOMParser().parseFromString(html, 'text/html')
-            doc.querySelectorAll('table').forEach((table) => {
-              if (table.querySelector('th')) return
-              const firstRow = table.querySelector('tr')
-              if (!firstRow) return
-              firstRow.querySelectorAll('td').forEach((td) => {
-                const th = doc.createElement('th')
-                th.innerHTML = td.innerHTML
-                for (const attr of Array.from(td.attributes)) {
-                  th.setAttribute(attr.name, attr.value)
-                }
-                td.replaceWith(th)
-              })
-            })
-            return doc.body.innerHTML
-          } catch {
-            // On any DOM-parse failure, leave the pasted HTML untouched.
-            return html
-          }
-        },
       },
       onUpdate: ({ editor }) => syncFromEditor(editor),
     })

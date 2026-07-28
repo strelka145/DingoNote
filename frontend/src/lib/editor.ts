@@ -17,7 +17,7 @@ import { Image } from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import Suggestion from '@tiptap/suggestion'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Fragment, Slice } from '@tiptap/pm/model'
+import { TablePaste } from './extensions/table-paste'
 import jspreadsheet from 'jspreadsheet-ce'
 
 // ── Spreadsheet node ─────────────────────────────────────────────────────────
@@ -1428,79 +1428,6 @@ const ImagePaste = Extension.create({
   },
 })
 
-// Pasting cells that carry a header type drops "title" cells into the body of
-// the target table, producing extra header rows / stray bold cells. This shows
-// up from Google Sheets (its frozen/header row exports as <th>) and from
-// copying between our own tables (ProseMirror keeps the tableHeader node type
-// in its internal clipboard slice, which bypasses any HTML-level transform).
-// Work at the slice level so both paths are covered: demote every pasted
-// tableHeader node to tableCell. Existing tables keep their own header row.
-const StripPastedTableHeaders = Extension.create({
-  name: 'stripPastedTableHeaders',
-  addProseMirrorPlugins() {
-    const mapFrag = (frag: Fragment, fn: (n: any) => any): Fragment => {
-      const out: any[] = []
-      frag.forEach((n) => out.push(fn(n)))
-      return Fragment.fromArray(out)
-    }
-    // Re-type every cell in a row (tableHeader <-> tableCell), keeping content.
-    const retypeRow = (row: any, type: any): any =>
-      row.copy(mapFrag(row.content, (c) => type.create(c.attrs, c.content, c.marks)))
-
-    // Body target: pasted cells fill body positions, so demote all header
-    // cells — otherwise they render as stray extra "title" rows/cells.
-    const demoteAll = (frag: Fragment, schema: any): Fragment => {
-      const cell = schema.nodes.tableCell
-      const header = schema.nodes.tableHeader
-      return mapFrag(frag, (n) =>
-        n.type === header
-          ? cell.create(n.attrs, demoteAll(n.content, schema), n.marks)
-          : n.copy(demoteAll(n.content, schema)),
-      )
-    }
-    // Top-level / header target: make each pasted table (or loose row run) have
-    // exactly one header row = its first row, the rest body.
-    const firstRowHeader = (frag: Fragment, schema: any): Fragment => {
-      const header = schema.nodes.tableHeader
-      const cell = schema.nodes.tableCell
-      let rowIdx = 0
-      return mapFrag(frag, (n) => {
-        if (n.type.name === 'table') {
-          let i = 0
-          return n.copy(mapFrag(n.content, (row) => retypeRow(row, i++ === 0 ? header : cell)))
-        }
-        if (n.type.name === 'tableRow') {
-          return retypeRow(n, rowIdx++ === 0 ? header : cell)
-        }
-        return n
-      })
-    }
-    return [
-      new Plugin({
-        props: {
-          transformPasted: (slice, view) => {
-            const schema = view.state.schema
-            if (!schema.nodes.tableHeader || !schema.nodes.tableCell) return slice
-            // Where is the caret? Inside a body cell -> demote; inside a header
-            // cell or outside any table -> first row becomes the header.
-            const $from = view.state.selection.$from
-            let inBodyCell = false
-            for (let d = $from.depth; d > 0; d--) {
-              const name = $from.node(d).type.name
-              if (name === 'tableCell') { inBodyCell = true; break }
-              if (name === 'tableHeader') break
-            }
-            const content = inBodyCell
-              ? demoteAll(slice.content, schema)
-              : firstRowHeader(slice.content, schema)
-            return new Slice(content, slice.openStart, slice.openEnd)
-          },
-        },
-      }),
-    ]
-  },
-})
-
 // Override the default ListItem so list items can contain any block
 // (code blocks, blockquotes, nested lists, multiple paragraphs, etc.)
 // instead of the StarterKit default `'paragraph block*'` which pins the
@@ -1521,5 +1448,5 @@ export const editorExtensions = [
   SlashCommands,
   WikiLinkSuggestion,
   ImagePaste,
-  StripPastedTableHeaders,
+  TablePaste,
 ]
