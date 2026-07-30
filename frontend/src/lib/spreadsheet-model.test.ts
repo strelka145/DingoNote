@@ -5,6 +5,7 @@ import {
   columnHasText,
   deriveColumnDecimals,
   trimTrailingEmptyRows,
+  initialColumnCount,
   defaultColumnName,
   isDefaultColumnName,
   parseGridJson,
@@ -121,6 +122,25 @@ describe('trimTrailingEmptyRows', () => {
   })
   it('an all-empty grid trims to []', () => {
     expect(trimTrailingEmptyRows([['', ''], ['', '']])).toEqual([])
+  })
+})
+
+describe('initialColumnCount (bug: columns were forced to >= 3)', () => {
+  it('respects a 1-column grid', () => {
+    expect(initialColumnCount([['a'], ['b']], [])).toBe(1)
+  })
+  it('respects a 2-column grid (no longer padded to 3)', () => {
+    expect(initialColumnCount([['a', 'b'], ['c', 'd']], [])).toBe(2)
+  })
+  it('keeps grids wider than 3', () => {
+    expect(initialColumnCount([['a', 'b', 'c', 'd']], [])).toBe(4)
+  })
+  it('widens to the header count when headers are longer than the data', () => {
+    expect(initialColumnCount([['a']], ['H1', 'H2'])).toBe(2)
+  })
+  it('never returns less than 1', () => {
+    expect(initialColumnCount([], [])).toBe(1)
+    expect(initialColumnCount([[]], [])).toBe(1)
   })
 })
 
