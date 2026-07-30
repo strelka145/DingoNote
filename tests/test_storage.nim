@@ -90,7 +90,38 @@ suite "parseNote/tagLine round-trip":
     let id = $genOid()
     saveNote(id, "T", @["a"], "B")
     let raw = readFile(dataDir() / (id & ".md"))
-    check raw == "# T\n#a\n\nB"
+    check raw == "# T\n#a\n\nB\n"
+
+suite "trailing newline (POSIX text-file convention)":
+  test "a saved note file ends with exactly one newline":
+    let id = $genOid()
+    saveNote(id, "T", @["a"], "line one\nline two")
+    let raw = readFile(dataDir() / (id & ".md"))
+    check raw.endsWith("\n")
+    check not raw.endsWith("\n\n")
+
+  test "a title-less note's file ends with a newline and round-trips":
+    let id = $genOid()
+    let body = "just body\nmore"
+    saveNote(id, "", @[], body)
+    let raw = readFile(dataDir() / (id & ".md"))
+    check raw == "just body\nmore\n"
+    # The added newline must not leak back into the content, or the editor would
+    # re-serialize without it and mark the note dirty on every open.
+    check loadNote(id).get.content == body
+
+  test "an already-newline-terminated body is not double-terminated":
+    let id = $genOid()
+    saveNote(id, "T", @[], "body\n")
+    let raw = readFile(dataDir() / (id & ".md"))
+    check raw.endsWith("body\n")
+    check not raw.endsWith("body\n\n")
+    check loadNote(id).get.content == "body"
+
+  test "an empty note stays empty (no phantom newline)":
+    let id = $genOid()
+    saveNote(id, "", @[], "")
+    check readFile(dataDir() / (id & ".md")) == ""
 
 suite "extractSnippet":
   test "returns a window around the match":
