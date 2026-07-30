@@ -82,6 +82,15 @@ export function trimTrailingEmptyRows(data: GridData): GridData {
   return data.slice(0, end)
 }
 
+// Column count for rendering a stored grid: the data's actual width (or the
+// header row, if wider), floored at 1 so jspreadsheet always has a column.
+// Previously floored at 3, which re-padded narrower sheets back to 3 columns on
+// every load — so deleting columns down to 1–2 never stuck. A freshly-inserted
+// empty sheet still opens 3-wide via DEFAULT_GRID, which is genuinely 3 columns.
+export function initialColumnCount(data: GridData, headers: string[]): number {
+  return Math.max(1, data[0]?.length || 1, headers.length)
+}
+
 export function defaultColumnName(i: number): string {
   let name = ''
   let n = i

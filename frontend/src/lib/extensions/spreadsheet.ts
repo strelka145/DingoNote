@@ -8,6 +8,7 @@ import {
   deriveColumnDecimals,
   columnHasText,
   trimTrailingEmptyRows,
+  initialColumnCount,
   isDefaultColumnName,
   parseGridJson,
   escapeAttr,
@@ -213,7 +214,7 @@ export const Spreadsheet = TiptapNode.create({
       const trimmed = trimTrailingEmptyRows(initialData)
       const gridData = trimmed.length ? trimmed : DEFAULT_GRID
       const rows = gridData.length
-      const cols = Math.max(3, gridData[0]?.length || 3, initialHeaders.length)
+      const cols = initialColumnCount(gridData, initialHeaders)
       const columns = Array.from({ length: cols }, (_, i) => ({
         width: 110,
         ...(initialHeaders[i] ? { title: initialHeaders[i] } : {}),
