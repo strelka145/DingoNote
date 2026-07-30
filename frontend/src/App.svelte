@@ -6,259 +6,45 @@
     setTemplatesProvider,
     setWikilinkContext,
     setVaultPathProvider,
-    commitAllSpreadsheets,
     setSpreadsheetChangeListener,
   } from './lib/editor'
   import { api } from './lib/api'
   import { exportToPDF } from './lib/pdf'
   import { highlight } from './lib/highlight'
-  import type { Note, NoteMeta, SearchHit } from './lib/types'
+  import { store } from './lib/noteStore.svelte'
 
-  type Mode = 'notes' | 'templates' | 'archive'
-
-  let mode = $state<Mode>('notes')
-  let notes = $state<SearchHit[]>([])
-  let templates: NoteMeta[] = []
-  let allNoteTitles: string[] = []
-  let allNoteIndex = new Map<string, string>() // title -> id
-  let current = $state<Note | null>(null)
-  let saveTimer: number | null = null
-  let dirty = $state(false)
-  let saveState = $state<'saved' | 'unsaved' | 'saving' | 'error'>('saved')
-  let saveError = $state('')
+  // DOM- and editor-coupled state stays in the component; all note/template
+  // data and operations live in the shared store (lib/noteStore.svelte.ts).
   let editorEl: HTMLDivElement | undefined = $state()
   let editor: Editor | null = null
   let inTable = $state(false)
-  let pendingDeleteId = $state<string | null>(null)
-  let pendingDeleteTimer: number | null = null
-  let searchQuery = $state('')
   let searchInput: HTMLInputElement | undefined = $state()
-  let searchTimer: number | null = null
-  let activeTag = $state<string | null>(null)
-  let tagDraft = $state('')
 
-  type SortKey = 'updated-desc' | 'updated-asc' | 'title-asc' | 'title-desc'
-  const SORT_KEYS: ReadonlyArray<SortKey> = [
-    'updated-desc',
-    'updated-asc',
-    'title-asc',
-    'title-desc',
-  ]
-  function loadSortPref(): SortKey {
-    const v = localStorage.getItem('notes-sort') as SortKey | null
-    return v && SORT_KEYS.includes(v) ? v : 'updated-desc'
-  }
-  let sortBy = $state<SortKey>(loadSortPref())
   $effect(() => {
-    localStorage.setItem('notes-sort', sortBy)
-  })
-
-  const sortedNotes = $derived.by(() => {
-    let list = notes.slice()
-    if (activeTag) {
-      list = list.filter((n) => (n.tags ?? []).includes(activeTag!))
-    }
-    const t = (n: SearchHit) => (n.title || '').toLowerCase()
-    list.sort((a, b) => {
-      switch (sortBy) {
-        case 'updated-desc':
-          return b.updatedAt - a.updatedAt
-        case 'updated-asc':
-          return a.updatedAt - b.updatedAt
-        case 'title-asc':
-          return t(a).localeCompare(t(b))
-        case 'title-desc':
-          return t(b).localeCompare(t(a))
-      }
-    })
-    return list
+    localStorage.setItem('notes-sort', store.sortBy)
   })
 
   setTemplatesProvider(
-    () => templates.map((t) => ({ id: t.id, title: t.title })),
+    () => store.templates.map((t) => ({ id: t.id, title: t.title })),
     (id) => api.loadTemplate(id),
   )
 
   setWikilinkContext(
-    () => allNoteTitles,
+    () => store.allNoteTitles,
     (title) => {
-      const id = allNoteIndex.get(title)
+      const id = store.allNoteIndex.get(title)
       if (id) {
-        if (mode !== 'notes') {
-          void switchMode('notes').then(() => select(id))
+        if (store.mode !== 'notes') {
+          void store.switchMode('notes').then(() => store.select(id))
         } else {
-          void select(id)
+          void store.select(id)
         }
       }
     },
   )
 
-  function scopeApi() {
-    if (mode === 'notes') {
-      return {
-        list: api.listNotes,
-        load: api.loadNote,
-        save: api.saveNote,
-        create: api.createNote,
-        del: api.deleteNote,
-        duplicate: api.duplicateNote,
-        search: api.searchNotes,
-      }
-    }
-    if (mode === 'templates') {
-      return {
-        list: api.listTemplates,
-        load: api.loadTemplate,
-        save: api.saveTemplate,
-        create: api.createTemplate,
-        del: api.deleteTemplate,
-        duplicate: api.duplicateTemplate,
-        search: api.searchTemplates,
-      }
-    }
-    // archive — purge as delete, no save/create/duplicate
-    return {
-      list: api.listArchive,
-      load: api.loadArchive,
-      save: async () => {},
-      create: async () => {
-        throw new Error('Cannot create in archive')
-      },
-      del: api.purgeArchive,
-      duplicate: async (_id: string) => {
-        throw new Error('Cannot duplicate in archive')
-      },
-      search: api.searchArchive,
-    }
-  }
-
-  async function duplicate(id: string, ev: Event) {
-    ev.stopPropagation()
-    clearPendingDelete()
-    if (!(await flushSave())) return
-    await commitWikilinkRename()
-    const meta = await scopeApi().duplicate(id)
-    await refresh()
-    await openNote(meta.id)
-  }
-
-  async function restoreFromArchive(id: string, ev: Event) {
-    ev.stopPropagation()
-    clearPendingDelete()
-    await api.restoreNote(id)
-    if (current?.id === id) current = null
-    await refresh()
-  }
-
-  // ── Wikilink rename cascade ────────────────────────────────────────────────
-  // Tracks the current note's title at load time so we can detect renames
-  // and rewrite `[[old]]` → `[[new]]` across the vault.
-  let loadedTitle: string | null = null
-
-  async function commitWikilinkRename() {
-    if (!current || loadedTitle === null) return
-    if (mode === 'archive') return // archived notes are frozen
-    const oldT = loadedTitle
-    const newT = current.title
-    if (!oldT || !newT || oldT === newT) {
-      loadedTitle = newT
-      return
-    }
-    try {
-      await api.renameWikilinks(oldT, newT)
-    } catch (e) {
-      // Non-fatal: the note itself was already saved; only the backlink rename
-      // failed. Surface it rather than swallowing silently.
-      console.warn('renameWikilinks failed', e)
-    }
-    loadedTitle = newT
-  }
-
-  function addTag(raw: string) {
-    if (!current) return
-    const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, '-')
-    if (!tag) return
-    const tags = current.tags ?? []
-    if (!tags.includes(tag)) {
-      current.tags = [...tags, tag]
-      scheduleSave()
-    }
-  }
-
-  function removeTag(tag: string) {
-    if (!current) return
-    current.tags = (current.tags ?? []).filter((t) => t !== tag)
-    scheduleSave()
-  }
-
-  function onTagKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
-      e.preventDefault()
-      addTag(tagDraft)
-      tagDraft = ''
-    } else if (e.key === 'Backspace' && tagDraft === '') {
-      const tags = current?.tags ?? []
-      if (tags.length) removeTag(tags[tags.length - 1])
-    }
-  }
-
-  function filterByTag(tag: string) {
-    activeTag = activeTag === tag ? null : tag
-  }
-
-  async function refreshTemplates() {
-    templates = await api.listTemplates()
-  }
-
-  // Monotonic guard: fast typing fires overlapping refresh()es, and a slower
-  // earlier request could resolve after a newer one. Each call claims a seq and
-  // bails after every await if a newer refresh has since started, so stale
-  // responses never overwrite the current results.
-  let refreshSeq = 0
-  async function refresh() {
-    const seq = ++refreshSeq
-    const hits = await scopeApi().search(searchQuery)
-    if (seq !== refreshSeq) return
-    notes = hits
-    if (mode === 'templates') {
-      templates = notes
-    } else {
-      await refreshTemplates()
-      if (seq !== refreshSeq) return
-    }
-    const all = await api.listNotes()
-    if (seq !== refreshSeq) return
-    allNoteTitles = all.map((n) => n.title).filter(Boolean)
-    allNoteIndex = new Map(
-      all.filter((n) => n.title).map((n) => [n.title, n.id]),
-    )
-  }
-
-  async function switchMode(next: Mode) {
-    if (next === mode) return
-    if (!(await flushSave())) return
-    await commitWikilinkRename()
-    loadedTitle = null
-    mode = next
-    current = null
-    searchQuery = ''
-    activeTag = null
-    tagDraft = ''
-    clearPendingDelete()
-    await refresh()
-  }
-
-  function debouncedSearch() {
-    if (searchTimer !== null) clearTimeout(searchTimer)
-    searchTimer = window.setTimeout(() => {
-      searchTimer = null
-      refresh()
-    }, 120)
-  }
-
   function clearSearch() {
-    searchQuery = ''
-    refresh()
+    store.clearSearch()
     searchInput?.focus()
   }
 
@@ -288,10 +74,10 @@
   async function changeVault() {
     const path = await api.pickFolder(config.vaultPath)
     if (!path) return
-    if (!(await flushSave())) return
+    if (!(await store.flushSave())) return
     config = await api.configSet({ vaultPath: path })
-    current = null
-    await refresh()
+    store.current = null
+    await store.refresh()
   }
 
   let gitignoreStatus = $state('')
@@ -304,9 +90,9 @@
   }
 
   async function exportPDF() {
-    if (!current || exporting) return
-    if (!(await flushSave())) return
-    const safeTitle = (current.title || 'untitled')
+    if (!store.current || exporting) return
+    if (!(await store.flushSave())) return
+    const safeTitle = (store.current.title || 'untitled')
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim() || 'untitled'
     const filename = `${safeTitle}.pdf`
@@ -319,133 +105,16 @@
     }
   }
 
-  // Load a note/template/archive entry into the editor and reset the
-  // dirty/title tracking. Shared by select / newNote / duplicate; callers own
-  // the preceding flush + rename and any refresh.
-  async function openNote(id: string) {
-    current = await scopeApi().load(id)
-    loadedTitle = current?.title ?? null
-    dirty = false
-  }
-
-  async function select(id: string) {
-    if (!(await flushSave())) return
-    await commitWikilinkRename()
-    if (current?.id === id) return
-    await openNote(id)
-    saveState = 'saved'
-  }
-
-  async function newNote() {
-    if (!(await flushSave())) return
-    await commitWikilinkRename()
-    const meta = await scopeApi().create()
-    await refresh()
-    await openNote(meta.id)
-  }
-
-  function clearPendingDelete() {
-    if (pendingDeleteTimer !== null) {
-      clearTimeout(pendingDeleteTimer)
-      pendingDeleteTimer = null
-    }
-    pendingDeleteId = null
-  }
-
-  async function remove(id: string, ev: Event) {
-    ev.stopPropagation()
-    if (pendingDeleteId === id) {
-      clearPendingDelete()
-      await scopeApi().del(id)
-      if (current?.id === id) current = null
-      await refresh()
-      return
-    }
-    clearPendingDelete()
-    pendingDeleteId = id
-    pendingDeleteTimer = window.setTimeout(() => {
-      pendingDeleteId = null
-      pendingDeleteTimer = null
-    }, 3000)
-  }
-
-  function scheduleSave() {
-    dirty = true
-    saveState = 'unsaved'
-    if (saveTimer !== null) clearTimeout(saveTimer)
-    saveTimer = window.setTimeout(flushSave, 500)
-  }
-
-  // Re-serialize the document and, if it changed, mark dirty + schedule a save.
-  // Called both from TipTap's onUpdate and explicitly from the spreadsheet
-  // commit listener — a setNodeAttribute flush from a spreadsheet edit doesn't
-  // reliably fire onUpdate, so without the explicit call a spreadsheet-only
-  // edit updates the doc but never triggers a save.
-  function syncFromEditor(ed: Editor) {
-    if (!current) return
-    const md = (ed.storage as any).markdown.getMarkdown() as string
-    if (md !== current.content) {
-      current.content = md
-      scheduleSave()
-    }
-  }
-
-  // Returns true when it's safe to proceed (nothing to save, or the save
-  // succeeded); false when the save failed and the caller must not switch away.
-  async function flushSave(): Promise<boolean> {
-    // Synchronously push any pending spreadsheet cell edits into the document
-    // before reading current.content. Spreadsheet edits reach the doc via an
-    // async microtask flush; on a note switch, focus has already left the grid
-    // (so the old activeElement-based blur check was skipped) and the save
-    // would read stale content and drop the edit. commitAllSpreadsheets fires
-    // onUpdate synchronously, so current.content + dirty are current here.
-    commitAllSpreadsheets()
-    if (saveTimer !== null) {
-      clearTimeout(saveTimer)
-      saveTimer = null
-    }
-    if (!current || !dirty) return true
-    const { id, title, tags, content } = current
-    dirty = false
-    saveState = 'saving'
-    saveError = ''
-    try {
-      await scopeApi().save(id, title, tags ?? [], content)
-      saveState = 'saved'
-    } catch (e) {
-      // Keep the edit (dirty) and surface the error; callers must NOT proceed
-      // to switch notes, or the unsaved content would be silently discarded.
-      saveState = 'error'
-      saveError = e instanceof Error ? e.message : String(e)
-      dirty = true
-      return false
-    }
-    await refresh()
-    return true
-  }
-
-  function formatDate(t: number) {
-    const d = new Date(t)
-    const now = new Date()
-    if (d.toDateString() === now.toDateString()) {
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  }
-
   $effect(() => {
     if (!editorEl) return
-    const initialContent = untrack(() => current?.content ?? '')
-    const isReadOnly = untrack(() => mode === 'archive')
+    const initialContent = untrack(() => store.current?.content ?? '')
+    const isReadOnly = untrack(() => store.mode === 'archive')
     const e = new Editor({
       element: editorEl,
       extensions: editorExtensions,
       content: initialContent,
       autofocus: false,
       editable: !isReadOnly,
-      // Wider safety zone around the caret before ProseMirror's
-      // scrollIntoView fires — reduces oscillation when typing near
-      // the viewport edges.
       // Table-paste normalization (td->th promotion + header retyping) lives in
       // the TablePaste extension (lib/extensions/table-paste.ts), so the whole
       // paste story is in one place.
@@ -453,13 +122,13 @@
         scrollMargin: 80,
         scrollThreshold: 80,
       },
-      onUpdate: ({ editor }) => syncFromEditor(editor),
+      onUpdate: ({ editor }) => store.syncFromEditor(editor),
     })
     editor = e
     // A spreadsheet cell edit flushes its data into the doc via setNodeAttribute,
     // which doesn't reliably fire onUpdate — sync explicitly so the edit triggers
     // a save on its own (not only when the body is later touched).
-    setSpreadsheetChangeListener(() => syncFromEditor(e))
+    setSpreadsheetChangeListener(() => store.syncFromEditor(e))
     const syncTableState = () => {
       inTable = e.isActive('table')
     }
@@ -482,7 +151,7 @@
     return () => window.removeEventListener('keydown', onGlobalKeyDown)
   })
 
-  loadConfig().then(() => refresh())
+  loadConfig().then(() => store.refresh())
 </script>
 
 <main>
@@ -490,21 +159,21 @@
     <header>
       <div class="tabs">
         <button
-          class:active={mode === 'notes'}
-          onclick={() => switchMode('notes')}>Notes</button>
+          class:active={store.mode === 'notes'}
+          onclick={() => store.switchMode('notes')}>Notes</button>
         <button
-          class:active={mode === 'templates'}
-          onclick={() => switchMode('templates')}>Templates</button>
+          class:active={store.mode === 'templates'}
+          onclick={() => store.switchMode('templates')}>Templates</button>
         <button
-          class:active={mode === 'archive'}
-          onclick={() => switchMode('archive')}
+          class:active={store.mode === 'archive'}
+          onclick={() => store.switchMode('archive')}
           title="Archive — soft-deleted notes">🗑</button>
       </div>
-      {#if mode !== 'archive'}
+      {#if store.mode !== 'archive'}
         <button
           class="new"
-          onclick={newNote}
-          aria-label={mode === 'notes' ? 'New note' : 'New template'}>+</button>
+          onclick={store.newNote}
+          aria-label={store.mode === 'notes' ? 'New note' : 'New template'}>+</button>
       {/if}
       <button
         class="settings-btn"
@@ -515,90 +184,90 @@
     <div class="search">
       <input
         bind:this={searchInput}
-        bind:value={searchQuery}
-        oninput={debouncedSearch}
+        bind:value={store.searchQuery}
+        oninput={store.debouncedSearch}
         placeholder="Search… (⌘K)"
         type="search"
       />
-      {#if searchQuery}
+      {#if store.searchQuery}
         <button class="search-clear" onclick={clearSearch} aria-label="Clear"
           >×</button
         >
       {/if}
     </div>
-    {#if activeTag}
+    {#if store.activeTag}
       <div class="tag-filter">
-        Filtered by <span class="tag-label active">#{activeTag}</span>
-        <button class="tag-filter-clear" onclick={() => (activeTag = null)}
+        Filtered by <span class="tag-label active">#{store.activeTag}</span>
+        <button class="tag-filter-clear" onclick={() => (store.activeTag = null)}
           >×</button
         >
       </div>
     {/if}
     <ul>
-      {#each sortedNotes as note (note.id)}
+      {#each store.sortedNotes as note (note.id)}
         <li>
           <button
             class="row"
-            class:active={current?.id === note.id}
-            onclick={() => select(note.id)}
+            class:active={store.current?.id === note.id}
+            onclick={() => store.select(note.id)}
           >
             <div class="title">
-              {#each highlight(note.title || 'Untitled', searchQuery) as seg}
+              {#each highlight(note.title || 'Untitled', store.searchQuery) as seg}
                 {#if seg.m}<mark>{seg.s}</mark>{:else}{seg.s}{/if}
               {/each}
             </div>
-            {#if searchQuery && note.snippet}
+            {#if store.searchQuery && note.snippet}
               <div class="snippet">
-                {#each highlight(note.snippet, searchQuery) as seg}
+                {#each highlight(note.snippet, store.searchQuery) as seg}
                   {#if seg.m}<mark>{seg.s}</mark>{:else}{seg.s}{/if}
                 {/each}
               </div>
             {:else}
-              <div class="meta">{formatDate(note.updatedAt)}</div>
+              <div class="meta">{store.formatDate(note.updatedAt)}</div>
             {/if}
             {#if note.tags?.length}
               <div class="row-tags">
                 {#each note.tags as tag}
-                  <span class="row-tag" class:active={activeTag === tag}
+                  <span class="row-tag" class:active={store.activeTag === tag}
                     >#{tag}</span
                   >
                 {/each}
               </div>
             {/if}
           </button>
-          {#if mode === 'archive'}
+          {#if store.mode === 'archive'}
             <button
               class="restore"
-              onclick={(e) => restoreFromArchive(note.id, e)}
+              onclick={(e) => store.restoreFromArchive(note.id, e)}
               aria-label="Restore"
               title="Restore to Notes">↺</button>
           {:else}
             <button
               class="dup"
-              onclick={(e) => duplicate(note.id, e)}
+              onclick={(e) => store.duplicate(note.id, e)}
               aria-label="Duplicate"
               title="Duplicate">⎘</button>
           {/if}
           <button
             class="del"
-            class:pending={pendingDeleteId === note.id}
-            onclick={(e) => remove(note.id, e)}
-            aria-label={pendingDeleteId === note.id
-              ? mode === 'archive' ? 'Confirm permanent delete' : 'Confirm delete'
-              : mode === 'archive' ? 'Delete forever' : 'Delete'}
-            title={mode === 'archive'
-              ? (pendingDeleteId === note.id ? 'Delete forever — click again to confirm' : 'Delete forever')
-              : (pendingDeleteId === note.id ? 'Click again to confirm' : 'Move to archive')}
-          >{pendingDeleteId === note.id ? '✓' : '×'}</button>
+            class:pending={store.pendingDeleteId === note.id}
+            onclick={(e) => store.remove(note.id, e)}
+            aria-label={store.pendingDeleteId === note.id
+              ? store.mode === 'archive' ? 'Confirm permanent delete' : 'Confirm delete'
+              : store.mode === 'archive' ? 'Delete forever' : 'Delete'}
+            title={store.mode === 'archive'
+              ? (store.pendingDeleteId === note.id ? 'Delete forever — click again to confirm' : 'Delete forever')
+              : (store.pendingDeleteId === note.id ? 'Click again to confirm' : 'Move to archive')}
+          >{store.pendingDeleteId === note.id ? '✓' : '×'}</button>
         </li>
       {/each}
-      {#if notes.length === 0}
+      {#if store.notes.length === 0}
         <li class="empty-list">
-          {searchQuery
+          {store.searchQuery
             ? 'No matches'
-            : mode === 'notes'
+            : store.mode === 'notes'
               ? 'No notes yet'
-              : mode === 'templates'
+              : store.mode === 'templates'
                 ? 'No templates yet'
                 : 'Archive is empty'}
         </li>
@@ -607,59 +276,59 @@
   </aside>
 
   <section class="editor">
-    {#if current}
+    {#if store.current}
       <div
-        class="save-status {saveState}"
-        title={saveState === 'error' ? saveError : ''}
+        class="save-status {store.saveState}"
+        title={store.saveState === 'error' ? store.saveError : ''}
       >
-        {saveState === 'saved'
+        {store.saveState === 'saved'
           ? '✓ saved'
-          : saveState === 'saving'
+          : store.saveState === 'saving'
             ? '… saving'
-            : saveState === 'error'
-              ? '⚠ ' + saveError
+            : store.saveState === 'error'
+              ? '⚠ ' + store.saveError
               : '● unsaved'}
       </div>
       <input
         class="title-input"
         placeholder="Title"
-        bind:value={current.title}
-        oninput={scheduleSave}
+        bind:value={store.current.title}
+        oninput={store.scheduleSave}
       />
       <div class="tags-bar">
-        {#each current.tags ?? [] as tag (tag)}
+        {#each store.current.tags ?? [] as tag (tag)}
           <span class="tag-chip">
             <button
               class="tag-label"
-              onclick={() => filterByTag(tag)}
-              class:active={activeTag === tag}
+              onclick={() => store.filterByTag(tag)}
+              class:active={store.activeTag === tag}
               title="Filter by #{tag}">#{tag}</button
             >
-            {#if mode !== 'archive'}
+            {#if store.mode !== 'archive'}
               <button
                 class="tag-x"
-                onclick={() => removeTag(tag)}
+                onclick={() => store.removeTag(tag)}
                 aria-label="Remove tag #{tag}">×</button
               >
             {/if}
           </span>
         {/each}
-        {#if mode !== 'archive'}
+        {#if store.mode !== 'archive'}
           <input
             class="tag-input"
             placeholder="add tag…"
-            bind:value={tagDraft}
-            onkeydown={onTagKeydown}
+            bind:value={store.tagDraft}
+            onkeydown={store.onTagKeydown}
             onblur={() => {
-              if (tagDraft.trim()) {
-                addTag(tagDraft)
-                tagDraft = ''
+              if (store.tagDraft.trim()) {
+                store.addTag(store.tagDraft)
+                store.tagDraft = ''
               }
             }}
           />
         {/if}
       </div>
-      {#key current.id}
+      {#key store.current.id}
         <div class="body" bind:this={editorEl}></div>
       {/key}
       <footer class="status">
@@ -707,9 +376,9 @@
           {exporting ? 'Exporting…' : 'Export PDF'}
         </button>
         <span class="status-text">
-          {#if mode === 'archive'}
+          {#if store.mode === 'archive'}
             Archived (read-only)
-          {:else if dirty}
+          {:else if store.dirty}
             Saving…
           {:else}
             Saved
@@ -719,12 +388,12 @@
     {:else}
       <div class="empty">
         <p>
-          {mode === 'notes'
+          {store.mode === 'notes'
             ? 'Select a note or create a new one'
             : 'Select a template, or create one to insert with /'}
         </p>
-        <button class="new-big" onclick={newNote}
-          >+ New {mode === 'notes' ? 'Note' : 'Template'}</button>
+        <button class="new-big" onclick={store.newNote}
+          >+ New {store.mode === 'notes' ? 'Note' : 'Template'}</button>
       </div>
     {/if}
   </section>
@@ -779,7 +448,7 @@
           <select
             id="sort-pref"
             class="sort-select"
-            bind:value={sortBy}
+            bind:value={store.sortBy}
           >
             <option value="updated-desc">Updated · newest</option>
             <option value="updated-asc">Updated · oldest</option>
