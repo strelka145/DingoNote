@@ -12,6 +12,7 @@
   import { exportToPDF } from './lib/pdf'
   import { highlight } from './lib/highlight'
   import { store } from './lib/noteStore.svelte'
+  import TagsBar from './lib/components/TagsBar.svelte'
 
   // DOM- and editor-coupled state stays in the component; all note/template
   // data and operations live in the shared store (lib/noteStore.svelte.ts).
@@ -295,39 +296,7 @@
         bind:value={store.current.title}
         oninput={store.scheduleSave}
       />
-      <div class="tags-bar">
-        {#each store.current.tags ?? [] as tag (tag)}
-          <span class="tag-chip">
-            <button
-              class="tag-label"
-              onclick={() => store.filterByTag(tag)}
-              class:active={store.activeTag === tag}
-              title="Filter by #{tag}">#{tag}</button
-            >
-            {#if store.mode !== 'archive'}
-              <button
-                class="tag-x"
-                onclick={() => store.removeTag(tag)}
-                aria-label="Remove tag #{tag}">×</button
-              >
-            {/if}
-          </span>
-        {/each}
-        {#if store.mode !== 'archive'}
-          <input
-            class="tag-input"
-            placeholder="add tag…"
-            bind:value={store.tagDraft}
-            onkeydown={store.onTagKeydown}
-            onblur={() => {
-              if (store.tagDraft.trim()) {
-                store.addTag(store.tagDraft)
-                store.tagDraft = ''
-              }
-            }}
-          />
-        {/if}
-      </div>
+      <TagsBar />
       {#key store.current.id}
         <div class="body" bind:this={editorEl}></div>
       {/key}
@@ -852,21 +821,9 @@
   }
 
   /* ── Tags ─────────────────────────────────────────────────────────────── */
-  .tags-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: center;
-    padding: 0 32px 8px;
-  }
-  .tag-chip {
-    display: inline-flex;
-    align-items: center;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    overflow: hidden;
-  }
+  /* The note's tag editor (.tags-bar / .tag-chip / .tag-x / .tag-input) lives
+     in TagsBar.svelte. .tag-label is kept here for the sidebar filter banner
+     below; it moves to Sidebar.svelte when that is extracted. */
   .tag-label {
     font-size: 12px;
     color: var(--text-dim);
@@ -879,27 +836,6 @@
   .tag-label.active {
     color: var(--accent, #4a9eff);
     font-weight: 600;
-  }
-  .tag-x {
-    font-size: 13px;
-    line-height: 1;
-    color: var(--text-dim);
-    padding: 2px 7px 2px 2px;
-    cursor: pointer;
-  }
-  .tag-x:hover {
-    color: var(--danger, #e5534b);
-  }
-  .tag-input {
-    font-size: 12px;
-    border: none;
-    background: transparent;
-    color: var(--text);
-    padding: 2px 4px;
-    width: 90px;
-  }
-  .tag-input::placeholder {
-    color: var(--text-dim);
   }
   .row-tags {
     display: flex;
