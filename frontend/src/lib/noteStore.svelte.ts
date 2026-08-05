@@ -34,7 +34,9 @@ class NoteStore {
   allNoteTitles: string[] = []
   allNoteIndex = new Map<string, string>() // title -> id
   current = $state<Note | null>(null)
-  dirty = $state(false)
+  // Single source of truth for save status. 'unsaved' / 'error' both mean the
+  // current document has edits not yet persisted (so flushSave has work to do);
+  // 'saved' / 'saving' mean nothing new is pending. Footer and chip both read it.
   saveState = $state<'saved' | 'unsaved' | 'saving' | 'error'>('saved')
   saveError = $state('')
   pendingDeleteId = $state<string | null>(null)
@@ -219,13 +221,15 @@ class NoteStore {
   }
 
   // ── Loading / navigation ─────────────────────────────────────────────────
-  // Load a note/template/archive entry into the editor and reset the
-  // dirty/title tracking. Shared by select / newNote / duplicate; callers own
-  // the preceding flush + rename and any refresh.
+  // Load a note/template/archive entry into the editor and reset the save/title
+  // tracking — a freshly loaded note is by definition saved. Shared by select /
+  // newNote / duplicate; callers own the preceding flush + rename and any
+  // refresh. Resetting saveState here is what keeps newNote/duplicate from
+  // leaving a stale 'unsaved'/'error' chip behind.
   openNote = async (id: string) => {
     this.current = await this.scopeApi().load(id)
     this.loadedTitle = this.current?.title ?? null
-    this.dirty = false
+    this.saveState = 'saved'
   }
 
   select = async (id: string) => {
@@ -233,7 +237,6 @@ class NoteStore {
     await this.commitWikilinkRename()
     if (this.current?.id === id) return
     await this.openNote(id)
-    this.saveState = 'saved'
   }
 
   newNote = async () => {
@@ -289,13 +292,12 @@ class NoteStore {
 
   // ── Saving ─────────────────────────────────────────────────────────────────
   scheduleSave = () => {
-    this.dirty = true
     this.saveState = 'unsaved'
     if (this.saveTimer !== null) clearTimeout(this.saveTimer)
     this.saveTimer = window.setTimeout(this.flushSave, 500)
   }
 
-  // Re-serialize the document and, if it changed, mark dirty + schedule a save.
+  // Re-serialize the document and, if it changed, mark unsaved + schedule a save.
   // Called both from TipTap's onUpdate and explicitly from the spreadsheet
   // commit listener — a setNodeAttribute flush from a spreadsheet edit doesn't
   // reliably fire onUpdate, so without the explicit call a spreadsheet-only
@@ -317,26 +319,29 @@ class NoteStore {
     // async microtask flush; on a note switch, focus has already left the grid
     // (so the old activeElement-based blur check was skipped) and the save
     // would read stale content and drop the edit. commitAllSpreadsheets fires
-    // onUpdate synchronously, so current.content + dirty are current here.
+    // onUpdate synchronously, so current.content + saveState are current here.
     commitAllSpreadsheets()
     if (this.saveTimer !== null) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
-    if (!this.current || !this.dirty) return true
+    // Nothing to persist unless the document has pending edits ('unsaved') or a
+    // prior save failed and still needs retrying ('error').
+    if (!this.current || (this.saveState !== 'unsaved' && this.saveState !== 'error'))
+      return true
     const { id, title, tags, content } = this.current
-    this.dirty = false
     this.saveState = 'saving'
     this.saveError = ''
     try {
       await this.scopeApi().save(id, title, tags ?? [], content)
-      this.saveState = 'saved'
+      // Only settle to 'saved' if no edit landed mid-save; scheduleSave would
+      // have flipped us back to 'unsaved' (with a fresh timer to persist it).
+      if (this.saveState === 'saving') this.saveState = 'saved'
     } catch (e) {
-      // Keep the edit (dirty) and surface the error; callers must NOT proceed
-      // to switch notes, or the unsaved content would be silently discarded.
+      // Surface the error and stay dirty; callers must NOT proceed to switch
+      // notes, or the unsaved content would be silently discarded.
       this.saveState = 'error'
       this.saveError = e instanceof Error ? e.message : String(e)
-      this.dirty = true
       return false
     }
     await this.refresh()

@@ -202,10 +202,10 @@
         <span class="status-text">
           {#if store.mode === 'archive'}
             Archived (read-only)
-          {:else if store.dirty}
-            Saving…
-          {:else}
+          {:else if store.saveState === 'saved'}
             Saved
+          {:else}
+            Saving…
           {/if}
         </span>
       </footer>
