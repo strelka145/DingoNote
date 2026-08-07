@@ -237,26 +237,28 @@ proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
       replyError(w, id, "PDF export is not supported on this platform yet")
 # ── Config callbacks ─────────────────────────────────────────────────────────
 
+# The AppConfig shape shared by configGet and configSet — both resolve to the
+# same object so the JS side never has to special-case which one it called.
+proc configJson(): JsonNode =
+  %* {
+    "vaultPath": getVaultPath(),
+    "platform": platformName,
+    "features": {
+      "pdfExport": hasNativePdfExport,
+      "nativeFolderPicker": hasNativeFolderPicker,
+    },
+  }
 proc cbConfigGet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   respond(w, id):
-    let obj = %* {
-      "vaultPath": getVaultPath(),
-      "platform": platformName,
-      "features": {
-        "pdfExport": hasNativePdfExport,
-        "nativeFolderPicker": hasNativeFolderPicker,
-      },
-    }
-    reply(w, id, obj)
+    reply(w, id, configJson())
 proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   respond(w, id):
     let args = parseJson($req).getElems()
     if args.len > 0 and args[0].kind == JObject and args[0].hasKey("vaultPath"):
       setVaultPath(args[0]["vaultPath"].getStr())
-    let obj = %* {"vaultPath": getVaultPath()}
-    reply(w, id, obj)
+    reply(w, id, configJson())
 proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
   respond(w, id):
