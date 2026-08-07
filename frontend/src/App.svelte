@@ -119,6 +119,11 @@
       e.off('selectionUpdate', syncTableState)
       e.off('transaction', syncTableState)
       e.off('focus', syncTableState)
+      // Drop the change listener before destroying: when no new editor follows
+      // (e.g. the note is deselected), a leftover listener would keep pointing
+      // at this destroyed editor and a late spreadsheet flush would read its
+      // torn-down storage. Re-creation re-registers it right after.
+      setSpreadsheetChangeListener(null)
       inTable = false
       e.destroy()
       editor = null
