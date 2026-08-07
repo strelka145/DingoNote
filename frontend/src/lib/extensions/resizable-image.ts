@@ -1,24 +1,29 @@
-import { Image } from '@tiptap/extension-image'
-import { vaultPathProvider } from '../editor-context'
+import { Image, type ImageOptions } from '@tiptap/extension-image'
+
+export interface ResizableImageOptions {
+  // Resolves the current vault path for turning vault-relative image srcs into
+  // file:// URLs. Supplied per-editor by the app (see buildExtensions).
+  vaultPath: () => string
+}
 
 // Resolve a stored image src to something the WKWebView can load. Absolute
 // URLs (http/data/blob/file) pass through; a vault-relative path like
-// "attachments/x.png" becomes a file:// URL under the current vault.
-export function resolveImageSrc(src: string): string {
+// "attachments/x.png" becomes a file:// URL under the given vault.
+export function resolveImageSrc(src: string, vaultPath: string): string {
   if (!src) return src
   if (/^(https?|data|blob|file):/.test(src)) return src
-  const vp = vaultPathProvider()
-  if (!vp) return src
+  if (!vaultPath) return src
   const cleaned = src.replace(/^\.?\/+/, '')
-  return `file://${vp}/${cleaned}`
+  return `file://${vaultPath}/${cleaned}`
 }
 
-export const ResizableImage = Image.extend({
+export const ResizableImage = Image.extend<ImageOptions & ResizableImageOptions>({
   addOptions() {
     return {
       ...this.parent?.(),
       inline: false,
       allowBase64: true,
+      vaultPath: () => '',
     }
   },
 
@@ -40,12 +45,13 @@ export const ResizableImage = Image.extend({
   },
 
   addNodeView() {
+    const vaultPath = this.options.vaultPath
     return ({ node, editor, getPos }) => {
       const wrapper = document.createElement('span')
       wrapper.className = 'image-wrapper'
 
       const img = document.createElement('img')
-      img.src = resolveImageSrc(node.attrs.src)
+      img.src = resolveImageSrc(node.attrs.src, vaultPath())
       if (node.attrs.alt) img.alt = node.attrs.alt
       if (node.attrs.width) img.style.width = `${node.attrs.width}px`
       wrapper.appendChild(img)
@@ -87,7 +93,7 @@ export const ResizableImage = Image.extend({
         dom: wrapper,
         update(updated) {
           if (updated.type.name !== 'image') return false
-          const resolved = resolveImageSrc(updated.attrs.src)
+          const resolved = resolveImageSrc(updated.attrs.src, vaultPath())
           if (img.src !== resolved) img.src = resolved
           img.alt = updated.attrs.alt ?? ''
           img.style.width = updated.attrs.width

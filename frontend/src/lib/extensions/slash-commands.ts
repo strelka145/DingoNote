@@ -2,8 +2,15 @@ import { Extension, type Editor } from '@tiptap/core'
 import { PluginKey } from '@tiptap/pm/state'
 import Suggestion from '@tiptap/suggestion'
 import { DEFAULT_GRID } from '../spreadsheet-model'
-import { templatesProvider, templateLoader } from '../editor-context'
+import type { TemplateRef } from '../editor-context'
 import { suggestionRenderer } from './suggestion-menu'
+
+export interface SlashCommandsOptions {
+  // Templates offered as `/tmpl` slash items, and a loader for their bodies.
+  // Supplied per-editor by the app (see buildExtensions).
+  templates: () => TemplateRef[]
+  loadTemplate: (id: string) => Promise<{ content: string } | null>
+}
 
 interface SlashItem {
   title: string
@@ -88,15 +95,15 @@ const SLASH_ITEMS: SlashItem[] = [
   },
 ]
 
-function templateSlashItems(): SlashItem[] {
-  return templatesProvider().map((t) => ({
+function templateSlashItems(opts: SlashCommandsOptions): SlashItem[] {
+  return opts.templates().map((t) => ({
     title: t.title || 'Untitled template',
     shortcut: '/tmpl',
     keywords: ['template', 'tmpl', (t.title || '').toLowerCase()].filter(
       Boolean,
     ),
     run: async (editor) => {
-      const full = await templateLoader(t.id)
+      const full = await opts.loadTemplate(t.id)
       if (!full) return
       const parser = (editor.storage as any).markdown?.parser
       const html = parser?.parse?.(full.content) ?? ''
@@ -105,9 +112,9 @@ function templateSlashItems(): SlashItem[] {
   }))
 }
 
-function filterSlashItems(query: string): SlashItem[] {
+function filterSlashItems(query: string, opts: SlashCommandsOptions): SlashItem[] {
   const q = query.toLowerCase().trim()
-  const all = [...SLASH_ITEMS, ...templateSlashItems()]
+  const all = [...SLASH_ITEMS, ...templateSlashItems(opts)]
   if (!q) return all
   return all.filter((item) => {
     if (item.title.toLowerCase().includes(q)) return true
@@ -116,8 +123,12 @@ function filterSlashItems(query: string): SlashItem[] {
   })
 }
 
-export const SlashCommands = Extension.create({
+export const SlashCommands = Extension.create<SlashCommandsOptions>({
   name: 'slashCommands',
+
+  addOptions() {
+    return { templates: () => [], loadTemplate: async () => null }
+  },
   addProseMirrorPlugins() {
     const editor = this.editor
     return [
@@ -127,7 +138,7 @@ export const SlashCommands = Extension.create({
         char: '/',
         startOfLine: false,
         allowSpaces: false,
-        items: ({ query }) => filterSlashItems(query),
+        items: ({ query }) => filterSlashItems(query, this.options),
         command: ({ editor, range, props }) => {
           editor.chain().focus().deleteRange(range).run()
           ;(props as SlashItem).run(editor)

@@ -1,13 +1,23 @@
 import { Node as TiptapNode } from '@tiptap/core'
 import { matchWikilink, renderWikilink } from '../wikilink'
-import { wikilinkTitles, wikilinkNavigate } from '../editor-context'
 
-export const WikiLink = TiptapNode.create({
+export interface WikiLinkOptions {
+  // Known note titles (to flag `[[missing]]` links) and the click-navigation
+  // handler. Supplied per-editor by the app (see buildExtensions).
+  titles: () => string[]
+  navigate: (title: string) => void
+}
+
+export const WikiLink = TiptapNode.create<WikiLinkOptions>({
   name: 'wikilink',
   inline: true,
   group: 'inline',
   atom: true,
   selectable: true,
+
+  addOptions() {
+    return { titles: () => [], navigate: () => {} }
+  },
 
   addAttributes() {
     return {
@@ -40,6 +50,7 @@ export const WikiLink = TiptapNode.create({
   },
 
   addNodeView() {
+    const { titles, navigate } = this.options
     return ({ node }) => {
       const a = document.createElement('a')
       a.className = 'wikilink'
@@ -48,14 +59,14 @@ export const WikiLink = TiptapNode.create({
       a.textContent = node.attrs.title
       a.contentEditable = 'false'
       const updateExists = () => {
-        const exists = wikilinkTitles().includes(node.attrs.title)
+        const exists = titles().includes(node.attrs.title)
         a.classList.toggle('missing', !exists)
       }
       updateExists()
       a.addEventListener('click', (ev) => {
         ev.preventDefault()
         ev.stopPropagation()
-        wikilinkNavigate(node.attrs.title)
+        navigate(node.attrs.title)
       })
       return {
         dom: a,

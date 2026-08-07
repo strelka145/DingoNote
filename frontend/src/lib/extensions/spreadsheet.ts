@@ -14,14 +14,25 @@ import {
   escapeAttr,
   buildSheetJson,
 } from '../spreadsheet-model'
-import { spreadsheetCommitters, notifySpreadsheetChange } from '../editor-context'
+import { spreadsheetCommitters } from '../editor-context'
 
-export const Spreadsheet = TiptapNode.create({
+export interface SpreadsheetOptions {
+  // Called after a spreadsheet edit dispatches a setNodeAttribute transaction,
+  // which doesn't reliably fire TipTap's onUpdate. The app re-serializes and
+  // schedules a save. Scoped to the editor instance, so it can't outlive it.
+  onChange: (() => void) | null
+}
+
+export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
   name: 'spreadsheet',
   group: 'block',
   atom: true,
   selectable: true,
   isolating: true,
+
+  addOptions() {
+    return { onChange: null }
+  },
 
   addAttributes() {
     // The actual values live inside `data-content` as JSON; the per-attribute
@@ -69,6 +80,7 @@ export const Spreadsheet = TiptapNode.create({
   },
 
   addNodeView() {
+    const { onChange } = this.options
     return ({ node, editor, getPos }) => {
       const wrapper = document.createElement('div')
       wrapper.classList.add('spreadsheet-wrapper')
@@ -144,7 +156,7 @@ export const Spreadsheet = TiptapNode.create({
           editor.view.dispatch(tr)
           // setNodeAttribute doesn't reliably fire TipTap's onUpdate, so notify
           // the app explicitly to re-serialize and schedule a save.
-          notifySpreadsheetChange()
+          onChange?.()
         }
       }
 

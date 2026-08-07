@@ -16,28 +16,45 @@ import { WikiLink } from './extensions/wikilink'
 import { WikiLinkSuggestion } from './extensions/wikilink-suggestion'
 import { Spreadsheet } from './extensions/spreadsheet'
 
-// Re-export the runtime-wiring API from here so App.svelte keeps a single
-// import surface (`./lib/editor`); the state itself lives in editor-context.
-export {
-  commitAllSpreadsheets,
-  setSpreadsheetChangeListener,
-  setTemplatesProvider,
-  setWikilinkContext,
-  setVaultPathProvider,
-  type TemplateRef,
-} from './editor-context'
+import type { TemplateRef } from './editor-context'
 
-export const editorExtensions = [
-  StarterKit.configure({ listItem: false, codeBlock: false }),
-  FlexibleListItem,
-  CodeBlockLowlight.configure({ lowlight, defaultLanguage: null }),
-  TableKit.configure({ table: { resizable: true } }),
-  ResizableImage,
-  Spreadsheet,
-  WikiLink,
-  Markdown.configure({ html: true, linkify: true, tightLists: true }),
-  SlashCommands,
-  WikiLinkSuggestion,
-  ImagePaste,
-  TablePaste,
-]
+// Re-export the still-shared editor context (the spreadsheet commit registry
+// the store flushes before saving; TemplateRef) so App.svelte keeps a single
+// import surface (`./lib/editor`).
+export { commitAllSpreadsheets, type TemplateRef } from './editor-context'
+
+// The per-editor wiring the app supplies at construction time. Previously these
+// lived as module-mutable singletons in editor-context; passing them as
+// extension options instead scopes each to its editor instance (so nothing
+// leaks past editor.destroy()) and removes the hidden global state.
+export interface EditorContext {
+  templates: () => TemplateRef[]
+  loadTemplate: (id: string) => Promise<{ content: string } | null>
+  wikilinkTitles: () => string[]
+  wikilinkNavigate: (title: string) => void
+  vaultPath: () => string
+  onSpreadsheetChange: () => void
+}
+
+export function buildExtensions(ctx: EditorContext) {
+  return [
+    StarterKit.configure({ listItem: false, codeBlock: false }),
+    FlexibleListItem,
+    CodeBlockLowlight.configure({ lowlight, defaultLanguage: null }),
+    TableKit.configure({ table: { resizable: true } }),
+    ResizableImage.configure({ vaultPath: ctx.vaultPath }),
+    Spreadsheet.configure({ onChange: ctx.onSpreadsheetChange }),
+    WikiLink.configure({
+      titles: ctx.wikilinkTitles,
+      navigate: ctx.wikilinkNavigate,
+    }),
+    Markdown.configure({ html: true, linkify: true, tightLists: true }),
+    SlashCommands.configure({
+      templates: ctx.templates,
+      loadTemplate: ctx.loadTemplate,
+    }),
+    WikiLinkSuggestion.configure({ titles: ctx.wikilinkTitles }),
+    ImagePaste,
+    TablePaste,
+  ]
+}

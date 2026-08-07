@@ -1,13 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { Editor } from '@tiptap/core'
-  import {
-    editorExtensions,
-    setTemplatesProvider,
-    setWikilinkContext,
-    setVaultPathProvider,
-    setSpreadsheetChangeListener,
-  } from './lib/editor'
+  import { buildExtensions, type EditorContext } from './lib/editor'
   import { api } from './lib/api'
   import { exportToPDF } from './lib/pdf'
   import { store } from './lib/noteStore.svelte'
@@ -25,14 +19,20 @@
     localStorage.setItem('notes-sort', store.sortBy)
   })
 
-  setTemplatesProvider(
-    () => store.templates.map((t) => ({ id: t.id, title: t.title })),
-    (id) => api.loadTemplate(id),
-  )
+  let exporting = $state(false)
+  let showSettings = $state(false)
+  let config = $state<{ vaultPath: string }>({ vaultPath: '' })
 
-  setWikilinkContext(
-    () => store.allNoteTitles,
-    (title) => {
+  // Per-editor wiring passed to buildExtensions. Defined once — the closures
+  // read the live store/config/editor each call, so the same object stays valid
+  // across editor recreations (note switches). `onSpreadsheetChange` routes
+  // through the current `editor`, which is nulled on teardown, so a late flush
+  // from a destroyed editor is a no-op.
+  const editorContext: EditorContext = {
+    templates: () => store.templates.map((t) => ({ id: t.id, title: t.title })),
+    loadTemplate: (id) => api.loadTemplate(id),
+    wikilinkTitles: () => store.allNoteTitles,
+    wikilinkNavigate: (title) => {
       const id = store.allNoteIndex.get(title)
       if (id) {
         if (store.mode !== 'notes') {
@@ -42,13 +42,11 @@
         }
       }
     },
-  )
-
-  let exporting = $state(false)
-  let showSettings = $state(false)
-  let config = $state<{ vaultPath: string }>({ vaultPath: '' })
-
-  setVaultPathProvider(() => config.vaultPath)
+    vaultPath: () => config.vaultPath,
+    onSpreadsheetChange: () => {
+      if (editor) store.syncFromEditor(editor)
+    },
+  }
 
   async function loadConfig() {
     config = await api.configGet()
@@ -90,7 +88,7 @@
     const isReadOnly = untrack(() => store.mode === 'archive')
     const e = new Editor({
       element: editorEl,
-      extensions: editorExtensions,
+      extensions: buildExtensions(editorContext),
       content: initialContent,
       autofocus: false,
       editable: !isReadOnly,
@@ -104,10 +102,6 @@
       onUpdate: ({ editor }) => store.syncFromEditor(editor),
     })
     editor = e
-    // A spreadsheet cell edit flushes its data into the doc via setNodeAttribute,
-    // which doesn't reliably fire onUpdate — sync explicitly so the edit triggers
-    // a save on its own (not only when the body is later touched).
-    setSpreadsheetChangeListener(() => store.syncFromEditor(e))
     const syncTableState = () => {
       inTable = e.isActive('table')
     }
@@ -119,11 +113,6 @@
       e.off('selectionUpdate', syncTableState)
       e.off('transaction', syncTableState)
       e.off('focus', syncTableState)
-      // Drop the change listener before destroying: when no new editor follows
-      // (e.g. the note is deselected), a leftover listener would keep pointing
-      // at this destroyed editor and a late spreadsheet flush would read its
-      // torn-down storage. Re-creation re-registers it right after.
-      setSpreadsheetChangeListener(null)
       inTable = false
       e.destroy()
       editor = null
