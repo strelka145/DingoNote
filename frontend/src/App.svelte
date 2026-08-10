@@ -102,6 +102,7 @@
       onUpdate: ({ editor }) => store.syncFromEditor(editor),
     })
     editor = e
+    store.editor = e
     const syncTableState = () => {
       inTable = e.isActive('table')
     }
@@ -116,6 +117,7 @@
       inTable = false
       e.destroy()
       editor = null
+      store.editor = null
     }
   })
 

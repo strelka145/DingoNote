@@ -14,8 +14,6 @@ import {
   escapeAttr,
   buildSheetJson,
 } from '../spreadsheet-model'
-import { spreadsheetCommitters } from '../editor-context'
-
 export interface SpreadsheetOptions {
   // Called after a spreadsheet edit dispatches a setNodeAttribute transaction,
   // which doesn't reliably fire TipTap's onUpdate. The app re-serializes and
@@ -23,7 +21,17 @@ export interface SpreadsheetOptions {
   onChange: (() => void) | null
 }
 
-export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
+export interface SpreadsheetStorage {
+  // Each live NodeView registers a synchronous "commit" here; the store flushes
+  // them (via commitAllSpreadsheets) right before saving so pending cell edits
+  // reach the document first. Lives in the editor's storage so it's discarded
+  // with the editor — no module-global registry to leak across instances.
+  committers: Set<() => void>
+  // prosemirror-markdown serialize/parse hooks (untyped by tiptap-markdown).
+  markdown: unknown
+}
+
+export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStorage>({
   name: 'spreadsheet',
   group: 'block',
   atom: true,
@@ -81,6 +89,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
 
   addNodeView() {
     const { onChange } = this.options
+    const { committers } = this.storage
     return ({ node, editor, getPos }) => {
       const wrapper = document.createElement('div')
       wrapper.classList.add('spreadsheet-wrapper')
@@ -196,7 +205,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
         }
         flush()
       }
-      spreadsheetCommitters.add(commitNow)
+      committers.add(commitNow)
 
       // jspreadsheet's onchange/onafterchanges don't reliably fire on cell
       // commit inside the webview, so committed edits never reach the document.
@@ -551,7 +560,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
           return true
         },
         destroy() {
-          spreadsheetCommitters.delete(commitNow)
+          committers.delete(commitNow)
           try {
             gridObserver.disconnect()
           } catch {
@@ -571,6 +580,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions>({
 
   addStorage() {
     return {
+      committers: new Set<() => void>(),
       markdown: {
         serialize(state: any, node: any) {
           // Keep the JSON on a single line. prosemirror-markdown's

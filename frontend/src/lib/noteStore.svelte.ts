@@ -24,9 +24,9 @@ function loadSortPref(): SortKey {
 
 // Owns the note/template/archive data and every operation that touches it —
 // listing, searching, loading, saving, and the wikilink-rename cascade. The
-// editor instance, DOM refs, PDF export, and settings live in App.svelte,
-// which drives this store. Exported as a singleton so the sidebar / tag / and
-// settings components read the same reactive state without prop threading.
+// DOM refs, PDF export, and settings live in App.svelte, which drives this
+// store. Exported as a singleton so the sidebar / tag / and settings components
+// read the same reactive state without prop threading.
 class NoteStore {
   mode = $state<Mode>('notes')
   notes = $state<SearchHit[]>([])
@@ -34,6 +34,10 @@ class NoteStore {
   allNoteTitles: string[] = []
   allNoteIndex = new Map<string, string>() // title -> id
   current = $state<Note | null>(null)
+  // The live editor, set by App.svelte on create and cleared on destroy. The
+  // store needs it only to flush pending spreadsheet edits before saving
+  // (commitAllSpreadsheets); it is not reactive.
+  editor: Editor | null = null
   // Single source of truth for save status. 'unsaved' / 'error' both mean the
   // current document has edits not yet persisted (so flushSave has work to do);
   // 'saved' / 'saving' mean nothing new is pending. Footer and chip both read it.
@@ -320,7 +324,7 @@ class NoteStore {
     // (so the old activeElement-based blur check was skipped) and the save
     // would read stale content and drop the edit. commitAllSpreadsheets fires
     // onUpdate synchronously, so current.content + saveState are current here.
-    commitAllSpreadsheets()
+    commitAllSpreadsheets(this.editor)
     if (this.saveTimer !== null) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null

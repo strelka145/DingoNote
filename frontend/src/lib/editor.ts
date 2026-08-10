@@ -16,12 +16,30 @@ import { WikiLink } from './extensions/wikilink'
 import { WikiLinkSuggestion } from './extensions/wikilink-suggestion'
 import { Spreadsheet } from './extensions/spreadsheet'
 
+import type { Editor } from '@tiptap/core'
 import type { TemplateRef } from './editor-context'
 
-// Re-export the still-shared editor context (the spreadsheet commit registry
-// the store flushes before saving; TemplateRef) so App.svelte keeps a single
-// import surface (`./lib/editor`).
-export { commitAllSpreadsheets, type TemplateRef } from './editor-context'
+// Re-export TemplateRef so App.svelte keeps a single import surface
+// (`./lib/editor`).
+export { type TemplateRef } from './editor-context'
+
+// Flush every live spreadsheet's pending cell edit into the document before a
+// save. Each spreadsheet NodeView registers a synchronous "commit" in the
+// editor's own storage (see the Spreadsheet extension); we iterate that set so
+// the registry lives and dies with the editor rather than as a module global.
+export function commitAllSpreadsheets(editor: Editor | null) {
+  const committers = editor?.storage.spreadsheet?.committers as
+    | Set<() => void>
+    | undefined
+  if (!committers) return
+  for (const commit of committers) {
+    try {
+      commit()
+    } catch {
+      // One sheet failing to commit must not block the others or the save.
+    }
+  }
+}
 
 // The per-editor wiring the app supplies at construction time. Previously these
 // lived as module-mutable singletons in editor-context; passing them as
