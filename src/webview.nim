@@ -17,8 +17,6 @@ elif defined(linux):
   {.passL: gorge("pkg-config --libs " & webkitPkg).}
 elif defined(windows):
   {.compile: "../vendor/webview/webview.cc".}
-  # NOTE: Windows builds also require the WebView2 SDK headers and loader lib.
-  # That setup is not wired up yet — Windows is build-incomplete on purpose.
 else:
   {.error: "Unsupported platform for webview bindings.".}
 
