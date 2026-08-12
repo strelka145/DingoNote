@@ -3,6 +3,7 @@
   import { Editor } from '@tiptap/core'
   import { buildExtensions, type EditorContext } from './lib/editor'
   import { api } from './lib/api'
+  import type { AppConfig } from './lib/types'
   import { exportToPDF } from './lib/pdf'
   import { store } from './lib/noteStore.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
@@ -21,7 +22,7 @@
 
   let exporting = $state(false)
   let showSettings = $state(false)
-  let config = $state<{ vaultPath: string }>({ vaultPath: '' })
+  let config = $state<AppConfig>({ vaultPath: '', platform: '', features: { pdfExport: false, nativeFolderPicker: false } })
 
   // Per-editor wiring passed to buildExtensions. Defined once — the closures
   // read the live store/config/editor each call, so the same object stays valid
@@ -57,11 +58,11 @@
     showSettings = true
   }
 
-  async function changeVault() {
-    const path = await api.pickFolder(config.vaultPath)
-    if (!path) return
+  async function changeVault(path?: string) {
+    const resolved = path ?? await api.pickFolder(config.vaultPath)
+    if (!resolved) return
     if (!(await store.flushSave())) return
-    config = await api.configSet({ vaultPath: path })
+    config = await api.configSet({ vaultPath: resolved })
     store.current = null
     await store.refresh()
   }
@@ -222,6 +223,7 @@
 <SettingsModal
   bind:open={showSettings}
   vaultPath={config.vaultPath}
+  nativeFolderPicker={config.features.nativeFolderPicker}
   onChangeVault={changeVault}
 />
 

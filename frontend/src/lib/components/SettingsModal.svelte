@@ -9,12 +9,17 @@
   let {
     open = $bindable(),
     vaultPath,
+    nativeFolderPicker,
     onChangeVault,
   }: {
     open: boolean
     vaultPath: string
-    onChangeVault: () => void
+    nativeFolderPicker: boolean
+    onChangeVault: (path?: string) => void
   } = $props()
+
+  let editingPath = $state(vaultPath)
+  $effect(() => { editingPath = vaultPath })
 
   let gitignoreStatus = $state('')
   async function createGitignore() {
@@ -45,8 +50,22 @@
       <div class="setting-row">
         <label>Vault Location</label>
         <div class="setting-control">
-          <code class="path">{vaultPath || '(default)'}</code>
-          <button class="setting-btn" onclick={onChangeVault}>Change…</button>
+          {#if nativeFolderPicker}
+            <code class="path">{vaultPath || '(default)'}</code>
+            <button class="setting-btn" onclick={() => onChangeVault()}>Change…</button>
+          {:else}
+            <input
+              class="path-input"
+              type="text"
+              bind:value={editingPath}
+              placeholder="C:\Users\…"
+            />
+            <button
+              class="setting-btn"
+              onclick={() => onChangeVault(editingPath)}
+              disabled={!editingPath || editingPath === vaultPath}
+            >Apply</button>
+          {/if}
         </div>
         <p class="hint">
           Notes are stored as .md files in this folder. Templates live in a
@@ -161,6 +180,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .path-input {
+    flex: 1;
+    padding: 6px 10px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+  }
+  .path-input:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   .setting-btn {
     padding: 6px 14px;
