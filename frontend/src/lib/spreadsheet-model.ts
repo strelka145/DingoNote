@@ -33,6 +33,21 @@ export function maskToDecimals(mask: unknown): number | null {
   return null
 }
 
+// Re-derive per-column decimals from jspreadsheet's live column options. Reading
+// the masks back (instead of maintaining a separate array) keeps `decimals`
+// aligned to the data after jspreadsheet shifts columns on insert/delete/move —
+// a separately-tracked array would drift. Trailing nulls are dropped so the
+// serialized form stays minimal.
+export function deriveColumnDecimals(
+  columns: ReadonlyArray<{ mask?: unknown } | null | undefined>,
+  colCount: number,
+): ColumnDecimals {
+  const out: ColumnDecimals = []
+  for (let x = 0; x < colCount; x++) out[x] = maskToDecimals(columns[x]?.mask)
+  while (out.length && out[out.length - 1] == null) out.pop()
+  return out
+}
+
 // A numeric mask garbles non-numeric cells (e.g. a text "Memo" cell renders as
 // "-2"), so a decimal format must only be applied to columns that hold numbers.
 // A column is safe to format when every non-empty cell is a number or a formula
@@ -65,6 +80,15 @@ export function trimTrailingEmptyRows(data: GridData): GridData {
   let end = data.length
   while (end > 0 && isEmptyRow(data[end - 1])) end--
   return data.slice(0, end)
+}
+
+// Column count for rendering a stored grid: the data's actual width (or the
+// header row, if wider), floored at 1 so jspreadsheet always has a column.
+// Previously floored at 3, which re-padded narrower sheets back to 3 columns on
+// every load — so deleting columns down to 1–2 never stuck. A freshly-inserted
+// empty sheet still opens 3-wide via DEFAULT_GRID, which is genuinely 3 columns.
+export function initialColumnCount(data: GridData, headers: string[]): number {
+  return Math.max(1, data[0]?.length || 1, headers.length)
 }
 
 export function defaultColumnName(i: number): string {

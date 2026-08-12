@@ -106,6 +106,11 @@ proc parseNote(full: string): tuple[title: string, tags: seq[string], body: stri
   while i < lines.len and lines[i].strip().len == 0:
     inc i
   result.body = if i < lines.len: lines[i..^1].join("\n") else: ""
+  # Drop the single trailing newline saveToDir adds (POSIX text-file
+  # convention). Without this it would leak into the content the editor loads;
+  # the editor re-serializes without it and would mark the note dirty on every
+  # open. removeSuffix strips only one, so this round-trips the added newline.
+  result.body.removeSuffix("\n")
 
 proc mtimeMs(path: string): int64 =
   (getLastModificationTime(path).toUnix * 1000) +
@@ -163,9 +168,14 @@ proc saveToDir(dir, id, title: string, tags: seq[string], content: string) =
   # consumes it), so the body round-trips instead of losing its first line.
   if head.len == 0 and bodyStartsAmbiguous(content):
     head = "#\n"
-  let body =
+  var body =
     if head.len > 0: head & "\n" & content
     else: content
+  # End the file with exactly one newline (POSIX text-file convention), so the
+  # vault stays diff/tool-friendly. parseNote strips this back off on load, so
+  # the note round-trips. An empty note is left genuinely empty.
+  if body.len > 0 and not body.endsWith("\n"):
+    body.add "\n"
   atomicWrite(path, body)
 
 proc createInDir(dir: string): NoteMeta =

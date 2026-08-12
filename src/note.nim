@@ -75,208 +75,157 @@ proc replyError(w: Webview, id: cstring, msg: string) =
   let node = %* {"error": msg}
   discard webview_return(w, id, 1, ($node).cstring)
 
+# Wrap a callback body so any exception is reported back to the frontend
+# instead of crashing the webview thread. Replaces the identical
+# `try: … except CatchableError as e: replyError(w, id, e.msg)` in every handler.
+template respond(w, id, body: untyped) =
+  try:
+    body
+  except CatchableError as e:
+    replyError(w, id, e.msg)
+
 # ── Bound callbacks ───────────────────────────────────────────────────────────
 
 proc cbList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let arr = newJArray()
     for m in listNotes():
       arr.add toJson(m)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let n = loadNote(args[0].getStr())
     if n.isSome:
       reply(w, id, toJson(n.get))
     else:
       reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     saveNote(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbCreate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     reply(w, id, toJson(createNote()))
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     deleteNote(args[0].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     reply(w, id, toJson(duplicateNote(args[0].getStr())))
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbRenameWikilinks(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let n = renameWikilinks(args[0].getStr(), args[1].getStr())
     reply(w, id, %n)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let query = args[0].getStr()
     let arr = newJArray()
     for h in searchNotes(query):
       arr.add toJson(h)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 # ── Archive callbacks ────────────────────────────────────────────────────────
 
 proc cbArchiveList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let arr = newJArray()
     for m in listArchive():
       arr.add toJson(m)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbArchiveLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let n = loadArchive(args[0].getStr())
     if n.isSome:
       reply(w, id, toJson(n.get))
     else:
       reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbArchiveSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let arr = newJArray()
     for h in searchArchive(args[0].getStr()):
       arr.add toJson(h)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbRestore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     restoreNote(args[0].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbPurge(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     purgeArchive(args[0].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 # ── Template callbacks ───────────────────────────────────────────────────────
 
 proc cbTplList(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let arr = newJArray()
     for m in listTemplates():
       arr.add toJson(m)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplLoad(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let n = loadTemplate(args[0].getStr())
     if n.isSome:
       reply(w, id, toJson(n.get))
     else:
       reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplSave(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     saveTemplate(args[0].getStr(), args[1].getStr(), parseTags(args[2]), args[3].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplCreate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     reply(w, id, toJson(createTemplate()))
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplDelete(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     deleteTemplate(args[0].getStr())
     reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplDuplicate(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     reply(w, id, toJson(duplicateTemplate(args[0].getStr())))
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbTplSearch(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let arr = newJArray()
     for h in searchTemplates(args[0].getStr()):
       arr.add toJson(h)
     reply(w, id, arr)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     when defined(macosx) or defined(linux):
       let args = parseJson($req).getElems()
       let defaultName =
@@ -286,40 +235,33 @@ proc cbExportPDF(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
       reply(w, id, newJNull())
     else:
       replyError(w, id, "PDF export is not supported on this platform yet")
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 # ── Config callbacks ─────────────────────────────────────────────────────────
 
+# The AppConfig shape shared by configGet and configSet — both resolve to the
+# same object so the JS side never has to special-case which one it called.
+proc configJson(): JsonNode =
+  %* {
+    "vaultPath": getVaultPath(),
+    "platform": platformName,
+    "features": {
+      "pdfExport": hasNativePdfExport,
+      "nativeFolderPicker": hasNativeFolderPicker,
+    },
+  }
 proc cbConfigGet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
-    let obj = %* {
-      "vaultPath": getVaultPath(),
-      "platform": platformName,
-      "features": {
-        "pdfExport": hasNativePdfExport,
-        "nativeFolderPicker": hasNativeFolderPicker,
-      },
-    }
-    reply(w, id, obj)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
+  respond(w, id):
+    reply(w, id, configJson())
 proc cbConfigSet(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     if args.len > 0 and args[0].kind == JObject and args[0].hasKey("vaultPath"):
       setVaultPath(args[0]["vaultPath"].getStr())
-    let obj = %* {"vaultPath": getVaultPath()}
-    reply(w, id, obj)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
+    reply(w, id, configJson())
 proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     when defined(macosx) or defined(linux):
       let args = parseJson($req).getElems()
       let start =
@@ -332,27 +274,18 @@ proc cbPickFolder(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
       # No native picker on this platform yet — resolve with null so the JS
       # side can fall back to a text-input prompt.
       reply(w, id, newJNull())
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbWriteGitignore(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let (created, path) = writeGitignore()
     reply(w, id, %* {"created": created, "path": path})
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 proc cbSaveAttachment(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
   let w = cast[Webview](arg)
-  try:
+  respond(w, id):
     let args = parseJson($req).getElems()
     let url = args[0].getStr()
     let rel = saveAttachment(url)
     reply(w, id, %rel)
-  except CatchableError as e:
-    replyError(w, id, e.msg)
-
 # ── Entry ────────────────────────────────────────────────────────────────────
 
 proc resolveIndexHtml(): string =
@@ -375,32 +308,36 @@ proc main() =
   discard webview_set_size(w, 1100, 720, hintNone)
 
   let warg = cast[pointer](w)
-  discard webview_bind(w, "noteList", cbList, warg)
-  discard webview_bind(w, "noteLoad", cbLoad, warg)
-  discard webview_bind(w, "noteSave", cbSave, warg)
-  discard webview_bind(w, "noteCreate", cbCreate, warg)
-  discard webview_bind(w, "noteDelete", cbDelete, warg)
-  discard webview_bind(w, "noteSearch", cbSearch, warg)
-  discard webview_bind(w, "noteDuplicate", cbDuplicate, warg)
-  discard webview_bind(w, "renameWikilinks", cbRenameWikilinks, warg)
-  discard webview_bind(w, "archiveList", cbArchiveList, warg)
-  discard webview_bind(w, "archiveLoad", cbArchiveLoad, warg)
-  discard webview_bind(w, "archiveSearch", cbArchiveSearch, warg)
-  discard webview_bind(w, "archiveRestore", cbRestore, warg)
-  discard webview_bind(w, "archivePurge", cbPurge, warg)
-  discard webview_bind(w, "templateList", cbTplList, warg)
-  discard webview_bind(w, "templateLoad", cbTplLoad, warg)
-  discard webview_bind(w, "templateSave", cbTplSave, warg)
-  discard webview_bind(w, "templateCreate", cbTplCreate, warg)
-  discard webview_bind(w, "templateDelete", cbTplDelete, warg)
-  discard webview_bind(w, "templateDuplicate", cbTplDuplicate, warg)
-  discard webview_bind(w, "templateSearch", cbTplSearch, warg)
-  discard webview_bind(w, "exportPDF", cbExportPDF, warg)
-  discard webview_bind(w, "configGet", cbConfigGet, warg)
-  discard webview_bind(w, "configSet", cbConfigSet, warg)
-  discard webview_bind(w, "pickFolder", cbPickFolder, warg)
-  discard webview_bind(w, "writeGitignore", cbWriteGitignore, warg)
-  discard webview_bind(w, "saveAttachment", cbSaveAttachment, warg)
+  let handlers = [
+    ("noteList", cbList),
+    ("noteLoad", cbLoad),
+    ("noteSave", cbSave),
+    ("noteCreate", cbCreate),
+    ("noteDelete", cbDelete),
+    ("noteSearch", cbSearch),
+    ("noteDuplicate", cbDuplicate),
+    ("renameWikilinks", cbRenameWikilinks),
+    ("archiveList", cbArchiveList),
+    ("archiveLoad", cbArchiveLoad),
+    ("archiveSearch", cbArchiveSearch),
+    ("archiveRestore", cbRestore),
+    ("archivePurge", cbPurge),
+    ("templateList", cbTplList),
+    ("templateLoad", cbTplLoad),
+    ("templateSave", cbTplSave),
+    ("templateCreate", cbTplCreate),
+    ("templateDelete", cbTplDelete),
+    ("templateDuplicate", cbTplDuplicate),
+    ("templateSearch", cbTplSearch),
+    ("exportPDF", cbExportPDF),
+    ("configGet", cbConfigGet),
+    ("configSet", cbConfigSet),
+    ("pickFolder", cbPickFolder),
+    ("writeGitignore", cbWriteGitignore),
+    ("saveAttachment", cbSaveAttachment),
+  ]
+  for (name, cb) in handlers:
+    discard webview_bind(w, name.cstring, cb, warg)
 
   when defined(macosx):
     # loadFileURL:allowingReadAccessToURL: grants the page read access to any

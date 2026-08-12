@@ -3,7 +3,9 @@ import {
   decimalsMask,
   maskToDecimals,
   columnHasText,
+  deriveColumnDecimals,
   trimTrailingEmptyRows,
+  initialColumnCount,
   defaultColumnName,
   isDefaultColumnName,
   parseGridJson,
@@ -54,6 +56,43 @@ describe('columnHasText', () => {
     expect(columnHasText([['', ''], ['', '']], 1)).toBe(false))
 })
 
+describe('deriveColumnDecimals (§9-1: decimals stay aligned to columns)', () => {
+  const cols = (...masks: (string | undefined)[]) => masks.map((m) => ({ mask: m }))
+
+  it('reads masks back to decimals, trimming trailing nulls', () => {
+    // col0 numeric(2), col1 text(no mask), col2 numeric(0)
+    expect(deriveColumnDecimals(cols('0.00', undefined, '0'), 3)).toEqual([2, null, 0])
+  })
+
+  it('drops trailing null columns', () => {
+    expect(deriveColumnDecimals(cols('0.0', undefined, undefined), 3)).toEqual([1])
+  })
+
+  it('all-plain columns -> empty array', () => {
+    expect(deriveColumnDecimals(cols(undefined, undefined), 2)).toEqual([])
+  })
+
+  // Reload/drift scenario: jspreadsheet shifts options.columns when a column is
+  // inserted/deleted; re-deriving from the shifted columns yields an array that
+  // still lines up with the data (this is what flush persists).
+  it('stays aligned after a column is inserted at the front', () => {
+    // before: [num(2), text, num(0)] -> [2,null,0]
+    // insert empty col at front: jspreadsheet shifts masks right
+    expect(deriveColumnDecimals(cols(undefined, '0.00', undefined, '0'), 4)).toEqual([
+      null, 2, null, 0,
+    ])
+  })
+
+  it('stays aligned after the front column is deleted', () => {
+    // delete that inserted col: masks shift back
+    expect(deriveColumnDecimals(cols('0.00', undefined, '0'), 3)).toEqual([2, null, 0])
+  })
+
+  it('honors colCount even if the columns array is longer', () => {
+    expect(deriveColumnDecimals(cols('0.0', '0.00'), 1)).toEqual([1])
+  })
+})
+
 describe('trimTrailingEmptyRows', () => {
   it('drops a trailing all-empty row (the phantom row)', () => {
     expect(
@@ -83,6 +122,25 @@ describe('trimTrailingEmptyRows', () => {
   })
   it('an all-empty grid trims to []', () => {
     expect(trimTrailingEmptyRows([['', ''], ['', '']])).toEqual([])
+  })
+})
+
+describe('initialColumnCount (bug: columns were forced to >= 3)', () => {
+  it('respects a 1-column grid', () => {
+    expect(initialColumnCount([['a'], ['b']], [])).toBe(1)
+  })
+  it('respects a 2-column grid (no longer padded to 3)', () => {
+    expect(initialColumnCount([['a', 'b'], ['c', 'd']], [])).toBe(2)
+  })
+  it('keeps grids wider than 3', () => {
+    expect(initialColumnCount([['a', 'b', 'c', 'd']], [])).toBe(4)
+  })
+  it('widens to the header count when headers are longer than the data', () => {
+    expect(initialColumnCount([['a']], ['H1', 'H2'])).toBe(2)
+  })
+  it('never returns less than 1', () => {
+    expect(initialColumnCount([], [])).toBe(1)
+    expect(initialColumnCount([[]], [])).toBe(1)
   })
 })
 
