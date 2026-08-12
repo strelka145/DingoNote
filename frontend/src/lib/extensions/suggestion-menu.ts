@@ -1,3 +1,8 @@
+import type {
+  SuggestionProps,
+  SuggestionKeyDownProps,
+} from '@tiptap/suggestion'
+
 // Shared dropdown for the `/` slash command and the `[[` wikilink
 // autocomplete (§3-4). Both previously hand-rolled an identical popup: a
 // `.slash-menu` div appended to <body>, rows with hover/click, keyboard
@@ -115,9 +120,9 @@ export function suggestionRenderer<T>(opts: {
 }) {
   return () => {
     let menu: SuggestionMenu<T> | null = null
-    let latest: any = null
+    let latest: SuggestionProps<T, T> | null = null
     return {
-      onStart: (props: any) => {
+      onStart: (props: SuggestionProps<T, T>) => {
         latest = props
         menu = new SuggestionMenu<T>({
           emptyText: opts.emptyText,
@@ -126,13 +131,13 @@ export function suggestionRenderer<T>(opts: {
         })
         menu.show(props.items, props.clientRect?.() ?? null)
       },
-      onUpdate: (props: any) => {
+      onUpdate: (props: SuggestionProps<T, T>) => {
         latest = props
         if (!menu) return
         menu.setOnPick((item) => props.command(item))
         menu.update(props.items, props.clientRect?.() ?? null)
       },
-      onKeyDown: ({ event }: { event: KeyboardEvent }) => {
+      onKeyDown: ({ event }: SuggestionKeyDownProps) => {
         if (!menu) return false
         if (event.key === 'ArrowDown') {
           menu.next()

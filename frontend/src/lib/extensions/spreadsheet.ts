@@ -1,6 +1,7 @@
 import { Node as TiptapNode, mergeAttributes } from '@tiptap/core'
 import jspreadsheet from 'jspreadsheet-ce'
 import {
+  type CellValue,
   type GridData,
   type ColumnDecimals,
   DEFAULT_GRID,
@@ -14,6 +15,37 @@ import {
   escapeAttr,
   buildSheetJson,
 } from '../spreadsheet-model'
+
+// Minimal view of a jspreadsheet-ce worksheet instance — only the methods and
+// option fields this NodeView actually touches. jspreadsheet-ce ships no usable
+// types, so we describe the surface we use instead of casting every call to
+// `any`.
+interface JssColumn {
+  mask?: string
+}
+interface JssWorksheet {
+  getData(processed?: boolean): GridData
+  setData(data: GridData): void
+  getHeaders(asArray?: boolean): string[]
+  getHeader(colIndex: number): string
+  setHeader(colIndex: number, title?: string): void
+  insertRow(): void
+  insertColumn(): void
+  deleteRow(index: number): void
+  deleteColumn(index: number): void
+  closeEditor(cell?: HTMLElement, save?: boolean): void
+  edition?: { cell?: HTMLElement }
+  options: { columns?: JssColumn[]; data?: GridData }
+}
+
+// The jspreadsheet-ce factory: builds worksheets into a container and also
+// carries a static destroy(). Cast the untyped default export once here so the
+// call sites stay typed.
+type JssFactory = ((el: HTMLElement, options: unknown) => JssWorksheet[]) & {
+  destroy(el: HTMLElement, destroyEventHandlers?: boolean): void
+}
+const jss = jspreadsheet as unknown as JssFactory
+
 export interface SpreadsheetOptions {
   // Called after a spreadsheet edit dispatches a setNodeAttribute transaction,
   // which doesn't reliably fire TipTap's onUpdate. The app re-serializes and
@@ -105,7 +137,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
 
       let updating = false
       let scheduled = false
-      let sheets: any[] = []
+      let sheets: JssWorksheet[] = []
       // Remember the last selection — jspreadsheet drops it when focus
       // moves out (e.g., clicking a toolbar button), so we cache it.
       let lastSelection: [number, number, number, number] | null = null
@@ -137,7 +169,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
           tr = tr.setNodeAttribute(
             pos,
             'data',
-            newData.map((r: string[]) => r.slice()),
+            newData.map((r: CellValue[]) => r.slice()),
           )
           changed = true
         }
@@ -151,7 +183,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
         // deriveColumnDecimals): reading the masks back keeps `decimals` aligned
         // to the data after jspreadsheet shifts columns on insert/delete/move.
         const newDecimals = deriveColumnDecimals(
-          (sheet.options?.columns as any[]) ?? [],
+          sheet.options.columns ?? [],
           newData[0]?.length ?? 0,
         )
         if (
@@ -247,7 +279,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
           : {}),
       }))
 
-      sheets = (jspreadsheet as any)(inner, {
+      sheets = jss(inner, {
         worksheets: [
           {
             // Pass a copy: jspreadsheet mutates its data array in place, and if
@@ -461,7 +493,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
       const applyDecimals = (places: number | null) => {
         const s = sheet0()
         if (!s || !lastSelection) return
-        const data = s.getData(false) as GridData
+        const data = s.getData(false)
         const colCount = data[0]?.length ?? 0
         const [x1, , x2] = lastSelection
         if (!s.options.columns) s.options.columns = []
@@ -552,7 +584,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
               masksChanged ||
               JSON.stringify(sheet.getData()) !== JSON.stringify(incoming)
             ) {
-              sheet.setData(incoming as any)
+              sheet.setData(incoming)
             }
           } finally {
             updating = false
@@ -567,7 +599,7 @@ export const Spreadsheet = TiptapNode.create<SpreadsheetOptions, SpreadsheetStor
           /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
         }
           try {
-            ;(jspreadsheet as any).destroy(inner, true)
+            jss.destroy(inner, true)
           } catch {
           /* jspreadsheet/DOM edge (no open editor, detached node, or teardown) — safe to ignore */
         }

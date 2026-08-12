@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/core'
 import { api } from './api'
 import { commitAllSpreadsheets } from './editor'
+import { getMarkdown } from './markdown'
 import type { Note, NoteMeta, SearchHit } from './types'
 
 export type Mode = 'notes' | 'templates' | 'archive'
@@ -28,16 +29,10 @@ function loadSortPref(): SortKey {
 // store. Exported as a singleton so the sidebar / tag / and settings components
 // read the same reactive state without prop threading.
 class NoteStore {
+  // ── Reactive UI state ($state — drives the sidebar, editor, footer, chips) ─
   mode = $state<Mode>('notes')
   notes = $state<SearchHit[]>([])
-  templates: NoteMeta[] = []
-  allNoteTitles: string[] = []
-  allNoteIndex = new Map<string, string>() // title -> id
   current = $state<Note | null>(null)
-  // The live editor, set by App.svelte on create and cleared on destroy. The
-  // store needs it only to flush pending spreadsheet edits before saving
-  // (commitAllSpreadsheets); it is not reactive.
-  editor: Editor | null = null
   // Single source of truth for save status. 'unsaved' / 'error' both mean the
   // current document has edits not yet persisted (so flushSave has work to do);
   // 'saved' / 'saving' mean nothing new is pending. Footer and chip both read it.
@@ -48,6 +43,22 @@ class NoteStore {
   activeTag = $state<string | null>(null)
   tagDraft = $state('')
   sortBy = $state<SortKey>(loadSortPref())
+
+  // ── Non-reactive caches ────────────────────────────────────────────────────
+  // Read only through editorContext closures (App.svelte) or internal logic,
+  // never rendered directly — so deliberately plain fields, not $state.
+  //
+  // Template metadata for the slash-command `/tmpl` menu; only id/title are read.
+  // Assigned from listTemplates() (NoteMeta[]) or, in templates mode, from the
+  // current search hits (SearchHit[] — upcast to their NoteMeta view).
+  templates: NoteMeta[] = []
+  // All note titles + a title→id index, for wikilink autocomplete/navigation.
+  allNoteTitles: string[] = []
+  allNoteIndex = new Map<string, string>() // title -> id
+  // The live editor, set by App.svelte on create and cleared on destroy. The
+  // store needs it only to flush pending spreadsheet edits before saving
+  // (commitAllSpreadsheets).
+  editor: Editor | null = null
 
   private saveTimer: number | null = null
   private pendingDeleteTimer: number | null = null
@@ -131,7 +142,9 @@ class NoteStore {
     if (seq !== this.refreshSeq) return
     this.notes = hits
     if (this.mode === 'templates') {
-      this.templates = this.notes
+      // In templates mode the sidebar hits *are* the templates; keep the slash
+      // menu in sync. SearchHit extends NoteMeta, so this is a widening view.
+      this.templates = this.notes satisfies NoteMeta[]
     } else {
       await this.refreshTemplates()
       if (seq !== this.refreshSeq) return
@@ -308,7 +321,7 @@ class NoteStore {
   // edit updates the doc but never triggers a save.
   syncFromEditor = (ed: Editor) => {
     if (!this.current) return
-    const md = (ed.storage as any).markdown.getMarkdown() as string
+    const md = getMarkdown(ed)
     if (md !== this.current.content) {
       this.current.content = md
       this.scheduleSave()

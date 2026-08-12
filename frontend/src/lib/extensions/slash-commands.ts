@@ -3,6 +3,7 @@ import { PluginKey } from '@tiptap/pm/state'
 import Suggestion from '@tiptap/suggestion'
 import { DEFAULT_GRID } from '../spreadsheet-model'
 import type { TemplateRef } from '../editor-context'
+import { markdownToHtml } from '../markdown'
 import { suggestionRenderer } from './suggestion-menu'
 
 export interface SlashCommandsOptions {
@@ -105,8 +106,7 @@ function templateSlashItems(opts: SlashCommandsOptions): SlashItem[] {
     run: async (editor) => {
       const full = await opts.loadTemplate(t.id)
       if (!full) return
-      const parser = (editor.storage as any).markdown?.parser
-      const html = parser?.parse?.(full.content) ?? ''
+      const html = markdownToHtml(editor, full.content)
       editor.chain().focus().insertContent(html).run()
     },
   }))
