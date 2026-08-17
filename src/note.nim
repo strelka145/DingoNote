@@ -286,6 +286,16 @@ proc cbSaveAttachment(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
     let url = args[0].getStr()
     let rel = saveAttachment(url)
     reply(w, id, %rel)
+proc cbAttachmentsScanOrphans(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  respond(w, id):
+    let (count, bytes) = scanOrphanAttachments()
+    reply(w, id, %* {"count": count, "bytes": bytes})
+proc cbAttachmentsDeleteOrphans(id: cstring, req: cstring, arg: pointer) {.cdecl.} =
+  let w = cast[Webview](arg)
+  respond(w, id):
+    let (deleted, bytes) = deleteOrphanAttachments()
+    reply(w, id, %* {"deleted": deleted, "bytes": bytes})
 # ── Entry ────────────────────────────────────────────────────────────────────
 
 proc resolveIndexHtml(): string =
@@ -335,6 +345,8 @@ proc main() =
     ("pickFolder", cbPickFolder),
     ("writeGitignore", cbWriteGitignore),
     ("saveAttachment", cbSaveAttachment),
+    ("attachmentsScanOrphans", cbAttachmentsScanOrphans),
+    ("attachmentsDeleteOrphans", cbAttachmentsDeleteOrphans),
   ]
   for (name, cb) in handlers:
     discard webview_bind(w, name.cstring, cb, warg)
