@@ -38,6 +38,8 @@ export interface NoteApi {
   pickFolder(startPath?: string): Promise<string | null>
   writeGitignore(): Promise<{ created: boolean; path: string }>
   saveAttachment(dataUrl: string): Promise<string>
+  attachmentsScanOrphans(): Promise<{ count: number; bytes: number }>
+  attachmentsDeleteOrphans(): Promise<{ deleted: number; bytes: number }>
 }
 
 // The name each NoteApi method is bound under on `window` by the Nim backend
@@ -71,6 +73,8 @@ const BIND = {
   pickFolder: 'pickFolder',
   writeGitignore: 'writeGitignore',
   saveAttachment: 'saveAttachment',
+  attachmentsScanOrphans: 'attachmentsScanOrphans',
+  attachmentsDeleteOrphans: 'attachmentsDeleteOrphans',
 } as const satisfies Record<keyof NoteApi, string>
 
 // The Nim webview binds each handler as an async function on `window`.

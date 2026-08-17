@@ -29,6 +29,38 @@
       ? '.gitignore created in the vault.'
       : '.gitignore already exists — left untouched.'
   }
+
+  // Unused-image cleanup. Two steps: a scan (safe, read-only) reports how many
+  // attachment files nothing references and their total size; a second click
+  // deletes them. `confirm()` is a no-op in the webview, so the scan result
+  // itself is the confirmation — the Delete button only appears after a scan
+  // finds something. `orphans === null` means "not scanned yet / nothing found".
+  const kb = (bytes: number) =>
+    bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`
+  let orphans = $state<{ count: number; bytes: number } | null>(null)
+  let attachmentStatus = $state('')
+  let busy = $state(false)
+  async function scanOrphans() {
+    busy = true
+    attachmentStatus = ''
+    orphans = null
+    const r = await api.attachmentsScanOrphans()
+    busy = false
+    if (r.count === 0) {
+      attachmentStatus = 'No unused images found.'
+    } else {
+      orphans = r
+    }
+  }
+  async function deleteOrphans() {
+    busy = true
+    const r = await api.attachmentsDeleteOrphans()
+    busy = false
+    orphans = null
+    attachmentStatus = `Deleted ${r.deleted} unused image${
+      r.deleted === 1 ? '' : 's'
+    } (${kb(r.bytes)} freed).`
+  }
 </script>
 
 {#if open}
@@ -86,6 +118,26 @@
           Drops a <code>.gitignore</code> in the vault for git users. Notes and
           attachments stay tracked; OS junk and the
           <code>.archive/</code> / <code>.templates/</code> folders are ignored.
+        </p>
+      </div>
+      <div class="setting-row">
+        <label>Storage</label>
+        <div class="setting-control">
+          <button class="setting-btn" onclick={scanOrphans} disabled={busy}>
+            Scan for unused images
+          </button>
+          {#if orphans}
+            <button class="setting-btn danger" onclick={deleteOrphans} disabled={busy}>
+              Delete {orphans.count} ({kb(orphans.bytes)})
+            </button>
+          {:else if attachmentStatus}
+            <span class="hint inline">{attachmentStatus}</span>
+          {/if}
+        </div>
+        <p class="hint">
+          Finds image files in <code>attachments/</code> that no note, template,
+          or archived note links to, and deletes them. Deletion is permanent —
+          scan first to see what would go.
         </p>
       </div>
       <div class="setting-row">
@@ -205,6 +257,14 @@
   }
   .setting-btn:hover {
     filter: brightness(1.1);
+  }
+  .setting-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    filter: none;
+  }
+  .setting-btn.danger {
+    background: var(--danger);
   }
   .hint {
     margin: 12px 0 0;

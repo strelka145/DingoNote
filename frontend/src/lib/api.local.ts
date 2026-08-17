@@ -283,5 +283,12 @@ export function localApi(): NoteApi {
     async saveAttachment(url) {
       return url
     },
+    async attachmentsScanOrphans() {
+      // No on-disk attachments in the browser fallback.
+      return { count: 0, bytes: 0 }
+    },
+    async attachmentsDeleteOrphans() {
+      return { deleted: 0, bytes: 0 }
+    },
   }
 }
