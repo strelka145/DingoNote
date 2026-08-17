@@ -30,6 +30,9 @@
         placeholder="add tag…"
         bind:value={store.tagDraft}
         onkeydown={store.onTagKeydown}
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
         onblur={() => {
           if (store.tagDraft.trim()) {
             store.addTag(store.tagDraft)

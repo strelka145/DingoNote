@@ -99,6 +99,14 @@
       editorProps: {
         scrollMargin: 80,
         scrollThreshold: 80,
+        // Turn off the OS/WebView text assists on the editing surface: macOS
+        // autocapitalization, autocorrect, the word-suggestion underline, and
+        // spellcheck. They fight with Markdown/code typing in a notebook.
+        attributes: {
+          autocorrect: 'off',
+          autocapitalize: 'off',
+          spellcheck: 'false',
+        },
       },
       onUpdate: ({ editor }) => store.syncFromEditor(editor),
     })
@@ -147,6 +155,9 @@
         placeholder="Title"
         bind:value={store.current.title}
         oninput={store.scheduleSave}
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
       />
       <TagsBar />
       {#key store.current.id}

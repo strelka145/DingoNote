@@ -64,6 +64,9 @@
       oninput={store.debouncedSearch}
       placeholder="Search… (⌘K)"
       type="search"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
     />
     {#if store.searchQuery}
       <button class="search-clear" onclick={clearSearch} aria-label="Clear"
