@@ -255,6 +255,50 @@ suite "archive/restore collision (bug 1-3: don't silently overwrite)":
       if (id & ".md.bak-") in path: inc baks
     check baks == 1
 
+suite "findOrphanAttachments (unused image detection)":
+  test "returns only files no content references":
+    let files = @["a.png", "b.jpg", "c.gif"]
+    let contents = @[
+      "see ![](attachments/a.png) here",
+      "<img src=\"attachments/c.gif\" width=\"120\">",
+    ]
+    check findOrphanAttachments(files, contents) == @["b.jpg"]
+
+  test "empty attachment list yields no orphans":
+    check findOrphanAttachments(@[], @["anything"]).len == 0
+
+  test "all referenced yields empty":
+    check findOrphanAttachments(@["x.png"], @["attachments/x.png"]).len == 0
+
+suite "scan/deleteOrphanAttachments (across notes, templates, archive)":
+  test "keeps referenced images (incl. archived), deletes the rest":
+    # An isolated vault so other suites' files don't skew the counts.
+    let vault = getTempDir() / ("dingo_att_" & $genOid())
+    gConfig.vaultPath = vault
+    createDir(vault)
+    createDir(attachmentsDir())
+    writeFile(attachmentsDir() / "used_note.png", "x")
+    writeFile(attachmentsDir() / "used_archive.png", "y")
+    writeFile(attachmentsDir() / "orphan.png", "z")
+    # A live note references one image …
+    saveNote($genOid(), "N", @[], "![](attachments/used_note.png)")
+    # … and an archived note references another (must be protected).
+    createDir(archiveDir())
+    writeFile(archiveDir() / ($genOid() & ".md"),
+      "<img src=\"attachments/used_archive.png\">")
+
+    check scanOrphanAttachments().count == 1
+
+    let del = deleteOrphanAttachments()
+    check del.deleted == 1
+    check del.bytes == 1  # "z"
+    check not fileExists(attachmentsDir() / "orphan.png")
+    check fileExists(attachmentsDir() / "used_note.png")
+    check fileExists(attachmentsDir() / "used_archive.png")
+
+    gConfig.vaultPath = testVault
+    removeDir(vault)
+
 # Clean up the temp vault.
 removeDir(testVault)
 echo "storage tests done"

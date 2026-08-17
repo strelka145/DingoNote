@@ -359,3 +359,65 @@ proc saveAttachment*(dataUrl: string): string =
   let filename = $genOid() & "." & ext
   atomicWrite(attachmentsDir() / filename, data)
   result = "attachments/" & filename
+
+# ── Orphan attachment cleanup ───────────────────────────────────────────────
+
+proc findOrphanAttachments*(attachmentFiles, noteContents: seq[string]): seq[string] =
+  ## Pure core: the attachment filenames not referenced by any note body. A file
+  ## is "referenced" when its basename appears literally in some content — image
+  ## refs are `attachments/<name>` and names are unique OIDs, so a substring
+  ## match is exact enough without parsing every `![](…)` / `<img>`.
+  for name in attachmentFiles:
+    var referenced = false
+    for content in noteContents:
+      if content.contains(name):
+        referenced = true
+        break
+    if not referenced:
+      result.add name
+
+proc listAttachmentFiles(): seq[string] =
+  for kind, path in walkDir(attachmentsDir()):
+    if kind == pcFile:
+      result.add path.extractFilename
+
+proc collectNoteContents(): seq[string] =
+  ## Every .md body across notes, templates, AND archive. Archive is included on
+  ## purpose: an image referenced only by an archived note must not be treated
+  ## as an orphan and deleted.
+  for dir in [dataDir(), templatesDir(), archiveDir()]:
+    for kind, path in walkDir(dir):
+      if kind != pcFile or not path.endsWith(".md"): continue
+      try:
+        result.add readFile(path)
+      except CatchableError as e:
+        # A note we can't read might reference an attachment; skipping it could
+        # delete a live file. Re-raise so the caller aborts rather than deletes
+        # against an incomplete reference set.
+        raise newException(IOError,
+          "cannot read " & path & " while scanning attachments: " & e.msg)
+
+proc scanOrphanAttachments*(): tuple[count: int, bytes: int64] =
+  ## Count + total size of unreferenced attachments (a preview; deletes nothing).
+  let orphans = findOrphanAttachments(listAttachmentFiles(), collectNoteContents())
+  for name in orphans:
+    try:
+      result.bytes += getFileSize(attachmentsDir() / name)
+    except CatchableError:
+      discard
+  result.count = orphans.len
+
+proc deleteOrphanAttachments*(): tuple[deleted: int, bytes: int64] =
+  ## Delete unreferenced attachments. Re-scans here rather than trusting a list
+  ## from an earlier scanOrphanAttachments call, so an image referenced since
+  ## then can't be removed. Hard delete — the UI's scan preview is the confirm.
+  let orphans = findOrphanAttachments(listAttachmentFiles(), collectNoteContents())
+  for name in orphans:
+    let p = attachmentsDir() / name
+    try:
+      let sz = getFileSize(p)
+      removeFile(p)
+      inc result.deleted
+      result.bytes += sz
+    except CatchableError as e:
+      stderr.writeLine("dingonote: could not delete orphan " & p & ": " & e.msg)
