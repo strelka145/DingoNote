@@ -29,6 +29,10 @@ export const WikiLink = TiptapNode.create<WikiLinkOptions>({
     return [
       {
         tag: 'a[data-wikilink]',
+        // StarterKit's Link mark also matches this <a href="#">, and ProseMirror
+        // tries mark rules before node rules at equal priority. Without this the
+        // link is parsed as a plain `[Title](#)` link and saved that way.
+        priority: 100,
         getAttrs: (el) => ({
           title: (el as HTMLElement).getAttribute('data-wikilink') ?? '',
         }),
